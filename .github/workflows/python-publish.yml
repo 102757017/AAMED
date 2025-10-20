@@ -18,7 +18,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.8.18", "3.11"] # 修正点1：为 Python 3.8 指定一个明确且稳定的补丁版本，避免 3.8.10 的安装问题。
+        python-version: ["3.8.18", "3.11"]
 
     steps:
     - name: 检出仓库代码
@@ -30,12 +30,12 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - name: 设置 MSVC C++ 编译环境
-      # 修正点2：这是最关键的修正。此步骤会正确配置编译环境，确保 cl.exe 等工具可用。
-      uses: microsoft/setup-msvc@v2
+      # 修正：使用了正确的 Action 名称 ilammy/msvc-dev-cmd
+      # 这个 Action 会将后续步骤置于一个类似 "Developer Command Prompt for VS" 的环境中
+      uses: ilammy/msvc-dev-cmd@v1
       with:
-        # 使用默认的最新 Visual Studio 版本和 x64 架构，这对于我们的需求是完美的。
-        # 此 Action 执行后，后续的 shell 步骤将处于一个类似 "Developer Command Prompt" 的环境中。
-        architecture: 'x64'
+        # 这个 Action 使用的参数是 `arch` 而不是 `architecture`
+        arch: 'x64'
 
     - name: 安装依赖 (NumPy 和 OpenCV-Python)
       shell: powershell
@@ -43,10 +43,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
-
-    # 修正点3：移除我们自己的 C++ 工具检查步骤，因为它现在是多余的。
-    # `microsoft/setup-msvc` action 会在找不到工具时自行失败，它的检查更可靠。
-    # - name: 检查 C++ 编译工具 (编译所需) ...
 
     - name: 下载并准备用于手动编译的 OpenCV C++ 库
       shell: powershell
