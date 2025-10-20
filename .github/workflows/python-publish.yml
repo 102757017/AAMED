@@ -1,0 +1,99 @@
+name: 为 Windows 编译 pyAAMED
+on:
+  push:
+    branches: [ main ] # 当代码推送到 main 分支时触发
+  pull_request:
+    branches: [ main ] # 当有拉取请求合并到 main 分支时触发
+  workflow_dispatch: # 允许通过 GitHub UI 手动运行工作流
+jobs:
+  build_windows:
+    runs-on: windows-latest # 使用最新的 Windows 运行器虚拟机
+    strategy:
+      matrix: # 定义一个矩阵，为不同的 Python 版本运行作业
+        python-version: ["3.8", "3.11"] # 使用 Python 3.8 和 3.11 进行测试和编译
+    steps:
+    - name: 检出仓库代码
+      uses: actions/checkout@v4
+    - name: 设置 Python ${{ matrix.python-version }} 环境
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: 安装依赖 (NumPy 和 OpenCV-Python)
+      run: |
+        python -m pip install --upgrade pip
+        # 显式安装 OpenCV 4.1.0. 此版本需要与你手动下载的 C++ OpenCV 库版本匹配。
+        # 如果你的 cv2.__version__.replace(".", "") 是 410，那么这里 `opencv-python==4.1.0.25` 等是合适的。
+        pip install numpy "opencv-python==4.1.0.25"
+      working-directory: ./AAMED/python # 在 AAMED/python 目录下执行此命令
+    - name: 检查 C++ 编译工具 (编译所需)
+      # GitHub Actions 的 windows-latest 运行器（例如 Windows Server 2022）通常已预装 Visual Studio
+      # 及其所需的 C++ 编译工具。通常不需要明确的安装步骤。
+      # 此处仅做环境检查，确保工具可用。
+      shell: powershell
+      run: |
+        # 检查 MSVC 编译工具是否可用。
+        # 如果未找到，这将导致作业失败，从而主动提示问题。
+        # 在 windows-latest 运行器上通常会存在。
+        if (-Not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+            Write-Error "未找到 Microsoft Visual C++ 编译工具。请确保运行器镜像上已启用 '使用 C++ 的桌面开发' 工作负载。"
+            exit 1
+        }
+        # 如果不通过 vcvarsall.bat 明确设置，通常 distutils 会自行找到。
+        # 此步主要确保环境完整性，提升编译鲁棒性。
+    - name: 下载并准备用于手动编译的 OpenCV 4.1.0 C++ 库
+      shell: powershell
+      run: |
+        $opencv_version = "4.1.0" # OpenCV 的版本号
+        $opencv_build_version = "410" # 用于 DLL 文件名 (例如 opencv_world410.dll)
+        $opencv_zip = "opencv-$opencv_version-vc14_vc15.exe" # OpenCV 的自解压安装包文件名
+        $opencv_install_dir = "D:/opencv-manually-built" # 临时安装 OpenCV 的目录
+        Write-Host "正在下载 OpenCV $opencv_version..."
+        # 使用 SourceForge 链接，因为它对于大文件更稳定。
+        # 该文件是一个自解压EXE，我们将使用 7-Zip 将其视为压缩包进行处理。
+        Invoke-WebRequest -Uri "https://sourceforge.net/projects/opencvlibrary/files/4.1.0/opencv-4.1.0-vc14_vc15.exe/download" -OutFile $opencv_zip
+        # 创建目标目录并使用 7-Zip (GitHub 运行器上通常预装) 解压
+        New-Item -ItemType Directory -Path $opencv_install_dir -Force
+        # 7z.exe 通常已在 windows-latest 运行器的 PATH 环境变量中
+        7z.exe x $opencv_zip "-o$opencv_install_dir" # 解压到临时目录
+        # 解压后的内容通常会在一个名为 'opencv' 的子文件夹中
+        # 对于 opencv-4.1.0-vc14_vc15.exe，结构通常是 D:/opencv-manually-built/opencv
+        Write-Host "OpenCV 已解压到: $opencv_install_dir/opencv"
+        # 设置 setup.py 文件中的 opencv_root 变量
+        # 这对于在 setup.py 中手动指定 OpenCV 路径至关重要
+        # 我们复制 setup.py 并修改其内容，以避免直接修改原始文件
+        Copy-Item -Path "AAMED/python/setup.py" -Destination "AAMED/python/setup_modified.py"
+        $setup_content = Get-Content "AAMED/python/setup_modified.py"
+        # 查找并替换 'opencv_root = ""' 为正确的路径。请注意这里的替换逻辑。
+        # 确保替换后的路径是 'D:/opencv-manually-built/opencv' 而不是 '/opencv'
+        $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""','opencv_root = "' + $opencv_install_dir + '/opencv"'
+        Set-Content -Path "AAMED/python/setup_modified.py" -Value $new_setup_content
+      working-directory: ./AAMED # 在 AAMED 目录下执行此命令 (setup.py 的父目录)
+    - name: 编译 pyAAMED 扩展模块
+      shell: powershell
+      run: |
+        # 运行修改后的 setup_modified.py 进行编译
+        # 因为 opencv_root 已设置，setup.py 将链接 opencv_world410.lib
+        # 并且会把 opencv_world410.dll 复制到当前目录。
+        python setup_modified.py build_ext --inplace
+      working-directory: ./AAMED/python # 在 AAMED/python 目录下执行此命令
+    - name: 验证编译输出并收集产物
+      shell: powershell
+      run: |
+        # 列出当前目录下生成的所有 pyAAMED 相关的 pyd 文件
+        Get-ChildItem -Path . -Filter "pyAAMED*.pyd" -Recurse
+        # 列出当前目录下生成的所有 DLL 文件
+        Get-ChildItem -Path . -Filter "*.dll" -Recurse
+        # 确认 opencv_world410.dll 是否已成功复制到 pyAAMED.pyd 所在的目录
+        if (-Not (Test-Path "$PWD/opencv_world410.dll")) {
+            Write-Error "编译完成后未找到 opencv_world410.dll 文件。可能出现问题。"
+            exit 1
+        }
+      working-directory: ./AAMED/python # 在 AAMED/python 目录下执行此命令
+    - name: 上传编译产物 (pyAAMED.pyd 和 OpenCV DLL)
+      uses: actions/upload-artifact@v4
+      with:
+        name: pyAAMED-${{ matrix.python-version }}-windows-pyd # 产物的名称
+        path: |
+          AAMED/python/*.pyd # 上传所有生成的 pyd 文件
+          AAMED/python/opencv_world*.dll # 上传所有 opencv_world*.dll 文件
+        retention-days: 7 # 产物保留天数
