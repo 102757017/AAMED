@@ -3,20 +3,18 @@ from pathlib import Path
 from setuptools import setup
 from distutils.extension import Extension
 from Cython.Distutils import build_ext
-import os # <-- 新增：导入 os 模块
+import os
 
 # Manual setup for Windows. These will take precedence over the automatic
 # process below. Make sure the same version of OpenCV is installed in
 # Python as the one installed from source.
 # 
-# Base folder of OpenCV installation. E.g. "D:/opencv"
-# 从环境变量 OPENCV_ROOT 获取 OpenCV 安装的根目录 (例如 D:/opencv-manually-built/opencv/build)
-opencv_root = os.environ.get("OPENCV_ROOT", "") # <-- 修改：从环境变量获取
+# Base folder of OpenCV installation. E.g. "D:/opencv-manually-built/opencv"
+opencv_root = os.environ.get("OPENCV_ROOT", "")
 
 # Check if OpenCV is installed
 try:
     import cv2
-    # cv2.__version__ 是例如 "4.10.0"，替换 "." 得到 "4100"
     version = cv2.__version__.replace(".", "")
 except ImportError:
     sys.exit("Required Python OpenCV package not found.")
@@ -24,33 +22,26 @@ except ImportError:
 
 # Manually installed OpenCV procedure for Windows
 if opencv_root:
-    # 不再需要 subprocess 来获取 opencv_src_version，直接依赖环境变量。
-    # import subprocess # <-- 删除：不再需要
+    # 移除 shutil 导入，因为不再需要其 copy 功能
+    # import shutil 
 
-    import shutil
-
-    # OPENCV_ROOT 环境变量被设置为 D:/opencv-manually-built/opencv/build
-    # 所以这里的 Path 应该直接在其下寻找 x64/vc17/bin 等
-
-    # 假设 OpenCV 的 Build 目录结构为 {OPENCV_ROOT}/x64/vc17/bin
-    opencv_bin = Path(opencv_root) / "x64/vc17/bin" # <-- 修改：移除 "build/" 并明确使用 "vc17"
+    # OPENCV_ROOT 环境变量现在被设置为 D:/opencv-manually-built/opencv
+    # 所以需要重新添加 "build/" 路径组件
+    opencv_bin = Path(opencv_root) / "build/x64/vc17/bin" # <-- 修正：添加 "build/"
     
     # 从环境变量 OPENCV_BUILD_VERSION 获取 OpenCV 的构建版本 (例如 "4100")
-    opencv_src_version = os.environ.get("OPENCV_BUILD_VERSION", "-1") # <-- 修改：从环境变量获取版本
+    opencv_src_version = os.environ.get("OPENCV_BUILD_VERSION", "-1")
 
     if version != opencv_src_version:
         sys.exit(f"Version mismatch: Python OpenCV ({version}) and installed OpenCV ({opencv_src_version} from env)")
 
-    # 包含目录为 {OPENCV_ROOT}/include
-    opencv_include = Path(opencv_root) / "include" # <-- 修改：移除 "build/"
-    # 库文件目录为 {OPENCV_ROOT}/x64/vc17/lib
-    opencv_lib_dirs = Path(opencv_root) / "x64/vc17/lib" # <-- 修改：移除 "build/" 并明确使用 "vc17"
+    opencv_include = Path(opencv_root) / "build/include" # <-- 修正：添加 "build/"
+    opencv_lib_dirs = Path(opencv_root) / "build/x64/vc17/lib" # <-- 修正：添加 "build/"
     extra_compile_args = ["/TP"]
-    libraries = [f"opencv_world{opencv_src_version}"] # <-- 修改：使用环境变量获取的版本
+    libraries = [f"opencv_world{opencv_src_version}"]
 
-    # Need to copy opencv_world to installation folder  
-    # so Python will successfully find the OpenCV library
-    shutil.copy(str(opencv_bin / f"opencv_world{opencv_src_version}.dll"), ".") # <-- 修改：使用环境变量获取的版本
+    # 🎯 关键修正：删除这一行，DLL 复制已由 GitHub Actions 的 PowerShell 步骤处理
+    # shutil.copy(str(opencv_bin / f"opencv_world{opencv_src_version}.dll"), ".")
 
 
 # Attempt to automatically find the associated OpenCV header 

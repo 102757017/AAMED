@@ -79,10 +79,10 @@ jobs:
             Write-Warning "MSYS2 安装路径 ($msys2_bin_path) 未找到。如果 setup.py 依赖 pkg-config，这可能导致失败。"
         }
 
-        # 设置 OPENCV_ROOT 环境变量，供 setup_modified.py 使用
-        # 它应该指向 OpenCV build 目录，例如 D:/opencv-manually-built/opencv/build
-        Add-Content -Path $env:GITHUB_ENV -Value "OPENCV_ROOT=$($opencv_install_dir)/opencv/build"
-        Write-Host "已设置环境变量 OPENCV_ROOT=$($opencv_install_dir)/opencv/build (通过 GITHUB_ENV)。"
+        # ✨ 关键修正：OPENCV_ROOT 应该指向 opencv 文件夹的根目录，而不是 build 文件夹
+        # 例如 D:/opencv-manually-built/opencv
+        Add-Content -Path $env:GITHUB_ENV -Value "OPENCV_ROOT=$($opencv_install_dir)/opencv"
+        Write-Host "已设置环境变量 OPENCV_ROOT=$($opencv_install_dir)/opencv (通过 GITHUB_ENV)。"
 
       working-directory: .
 
@@ -90,6 +90,7 @@ jobs:
       shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
+        # 使用 setup_modified.py 进行编译
         python setup_modified.py build_ext --inplace
       working-directory: ./python
       
@@ -105,16 +106,16 @@ jobs:
         }
         Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
         
+        # 这个路径是正确的，因为它基于 $opencv_install_dir/opencv/build
         $opencv_dll_path_base = "$opencv_install_dir/opencv/build/x64"
         $opencv_dll_source_path = ""
 
-        # 注意这里将 env:OPENEV_BUILD_VERSION 修正为 env.OPENCV_BUILD_VERSION
         if (Test-Path "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
             $opencv_dll_source_path = "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
             Write-Host "在 vc16 路径找到了 DLL：$opencv_dll_source_path"
         } 
         elseif (Test-Path "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
-            $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll" # 修正此处
+            $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
             Write-Host "在 vc17 路径找到了 DLL：$opencv_dll_source_path"
         } else {
             Write-Error "错误: 在预期的 OpenCV 解压路径中未找到需要的 DLL (vc16 或 vc17): $($opencv_dll_path_base)/vc16/bin 或 $($opencv_dll_path_base)/vc17/bin"
