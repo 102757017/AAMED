@@ -40,7 +40,7 @@ jobs:
         pip install Cython numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
-    - name: 下载并准备 OpenCV C++ 库
+    - name: 下载并准备 OpenCV C++ 库 (新增目录结构调试)
       shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -69,7 +69,26 @@ jobs:
 
         Write-Host "OpenCV 已解压到: $opencv_install_dir/opencv"
 
-        # 确保 MSYS2 的 bin 目录在 PATH 中 (如果仍需要 pkg-config)
+        # ✨ 新增调试信息：列出 OpenCV/build/x64/ 目录下的 vcXX 结构和 lib 文件
+        $root_lib_dir_path = "$opencv_install_dir/opencv/build/x64"
+        Write-Host "列出 OpenCV 库根目录 '$root_lib_dir_path' 的内容 (查找 vcXX 目录和 .lib/.dll 文件):"
+        if (Test-Path -Path $root_lib_dir_path -PathType Container) {
+            # 递归列出 vcXX/lib 和 vcXX/bin 目录，以及里面的 .lib 和 .dll 文件
+            Get-ChildItem -Path $root_lib_dir_path -Filter "vc*" -Directory -Recurse -Depth 2 | ForEach-Object {
+                Write-Host "  目录: $($_.FullName)"
+                if (Test-Path -Path "$($_.FullName)/lib" -PathType Container) {
+                    Write-Host "    列出 $($_.FullName)/lib 的 .lib 文件:"
+                    Get-ChildItem -Path "$($_.FullName)/lib" -Filter "*.lib" | Select-Object Name, Length
+                }
+                if (Test-Path -Path "$($_.FullName)/bin" -PathType Container) {
+                    Write-Host "    列出 $($_.FullName)/bin 的 .dll 文件:"
+                    Get-ChildItem -Path "$($_.FullName)/bin" -Filter "*.dll" | Select-Object Name, Length
+                }
+            }
+        } else {
+            Write-Warning "OpenCV 库根目录 '$root_lib_dir_path' 不存在，或者结构异常。"
+        }
+        
         Write-Host "检查并添加 MSYS2 bin 目录到 PATH..."
         $msys2_bin_path = "C:\msys64\usr\bin"
         if (Test-Path $msys2_bin_path) {
@@ -85,7 +104,7 @@ jobs:
 
       working-directory: .
 
-    - name: 编译 pyAAMED 扩展模块
+    - name: 编译 pyAAMED 扩展模块 (新增 setup.py 调试输出)
       shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -95,6 +114,7 @@ jobs:
       
     - name: 验证编译输出并收集产物
       shell: pwsh
+      # 此步骤只有在编译成功（即 LNK1181 解决）后才会运行
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
         Write-Host "正在查找编译产物..."
@@ -105,20 +125,35 @@ jobs:
         }
         Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
         
-        $opencv_dll_path_base = "$opencv_install_dir/opencv/build/x64"
+        $full_opencv_path = "$env:OPENCV_ROOT" # This is D:/opencv-manually-built/opencv
+        $opencv_build_x64_path = "$full_opencv_path/build/x64"
+        Write-Host "OpenCV Build x64 路径: $opencv_build_x64_path"
+
+        $dll_name = "opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        Write-Host "需要寻找的 DLL 名称: $dll_name"
+
+        # 再次尝试 vc16 和 vc17 路径。一旦我们从调试信息中确定了正确的 VC 版本，这里会相应调整
+        $vc16_bin_dir = "$opencv_build_x64_path/vc16/bin"
+        $vc17_bin_dir = "$opencv_build_x64_path/vc17/bin"
+
         $opencv_dll_source_path = ""
 
-        # ✨ 关键修正：将 DLL 查找路径优先指向 VC16
-        if (Test-Path "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
-            $opencv_dll_source_path = "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        $potential_vc16_dll_full_path = "$vc16_bin_dir/$dll_name"
+        $potential_vc17_dll_full_path = "$vc17_bin_dir/$dll_name"
+
+        Write-Host "尝试在 '$potential_vc16_dll_full_path' 查找 DLL..."
+        if (Test-Path $potential_vc16_dll_full_path) {
+            $opencv_dll_source_path = $potential_vc16_dll_full_path
             Write-Host "在 vc16 路径找到了 DLL：$opencv_dll_source_path"
         }
-        # 如果 vc16 不存在，再尝试 vc17 (作为备用选项，但我们期望 vc16 存在)
-        elseif (Test-Path "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
-            $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        
+        if ($opencv_dll_source_path -eq "" -and (Test-Path $potential_vc17_dll_full_path)) {
+            $opencv_dll_source_path = $potential_vc17_dll_full_path
             Write-Host "在 vc17 路径找到了 DLL：$opencv_dll_source_path"
-        } else {
-            Write-Error "错误: 在预期的 OpenCV 解压路径中未找到需要的 DLL (vc16 或 vc17): $($opencv_dll_path_base)/vc16/bin 或 $($opencv_dll_path_base)/vc17/bin"
+        }
+
+        if ($opencv_dll_source_path -eq "") {
+            Write-Error "错误: 在预期的 OpenCV DLL 路径中未找到需要的 DLL ('$dll_name')！请检查: '$vc16_bin_dir' 或 '$vc17_bin_dir'"
             exit 1
         }
 

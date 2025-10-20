@@ -24,7 +24,7 @@ except ImportError:
 if opencv_root:
     # OPENCV_ROOT 环境变量现在被设置为 D:/opencv-manually-built/opencv
     # 所以需要重新添加 "build/" 路径组件
-    # ✨ 关键修正：将 vc17 更改为 vc16
+    # 暂时保持 vc16，等待调试信息确定实际版本
     opencv_bin = Path(opencv_root) / "build/x64/vc16/bin"
     
     # 从环境变量 OPENCV_BUILD_VERSION 获取 OpenCV 的构建版本 (例如 "4100")
@@ -34,7 +34,7 @@ if opencv_root:
         sys.exit(f"Version mismatch: Python OpenCV ({version}) and installed OpenCV ({opencv_src_version} from env)")
 
     opencv_include = Path(opencv_root) / "build/include" 
-    # ✨ 关键修正：将 vc17 更改为 vc16
+    # 暂时保持 vc16，等待调试信息确定实际版本
     opencv_lib_dirs = Path(opencv_root) / "build/x64/vc16/lib" 
     extra_compile_args = ["/TP"]
     libraries = [f"opencv_world{opencv_src_version}"]
@@ -45,6 +45,7 @@ if opencv_root:
 # Attempt to automatically find the associated OpenCV header 
 # and library files for the current Python installation.
 else:
+    # (This block is not used in the CI pipeline as opencv_root is set)
     import sysconfig
 
     base = Path(sysconfig.get_config_var("base"))
@@ -116,6 +117,11 @@ ext_modules = [
     ),
 ]
 
+# ✨ 新增调试信息：打印 setup_modified.py 内部配置的路径和库
+print(f"Debug (setup_modified.py): opencv_root = {opencv_root}")
+print(f"Debug (setup_modified.py): opencv_include = {opencv_include}")
+print(f"Debug (setup_modified.py): opencv_lib_dirs = {opencv_lib_dirs}")
+print(f"Debug (setup_modified.py): libraries = {libraries}")
 
 class custom_build_ext(build_ext):
     def build_extensions(self):
