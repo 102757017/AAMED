@@ -33,35 +33,36 @@ jobs:
       uses: microsoft/setup-msbuild@v2
 
     - name: 安装依赖 (NumPy 和 OpenCV-Python)
-      shell: pwsh # 👈 修正：强制使用 PowerShell Core
+      shell: pwsh
       run: |
-        $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
+        $OutputEncoding = [System.Text.Encoding]::UTF8
         python -m pip install --upgrade pip
         pip install numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
     - name: 下载并准备 OpenCV C++ 库 (健壮版)
-      shell: pwsh # 👈 修正：强制使用 PowerShell Core
+      shell: pwsh
       run: |
-        $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
+        $OutputEncoding = [System.Text.Encoding]::UTF8
 
         $opencv_version = "${{ env.OPENCV_VERSION }}"
         $opencv_zip = "opencv-$opencv_version-windows.exe"
         $opencv_install_dir = "D:/opencv-manually-built"
-        $download_url = "https://github.com/opencv/opencv/releases/download/$opencv_version/$opencv_zip" # 此链接实际上是正确的
+        $download_url = "https://github.com/opencv/opencv/releases/download/$opencv_version/$opencv_zip"
 
         Write-Host "正在从官方 GitHub Releases 下载 OpenCV $opencv_version..."
         curl -L -o $opencv_zip $download_url --retry 3 --retry-delay 5
         
         $file_size_mb = (Get-Item $opencv_zip).Length / 1MB
         Write-Host "下载完成，文件大小: $($file_size_mb.ToString('F2')) MB"
-        if ($file_size_mb -lt 500) { # 假设 OpenCV exe 安装包通常大于 500MB
+        # 修正：文件大小检查阈值从 500 MB 降低到 100 MB，以适应实际文件大小
+        if ($file_size_mb -lt 100) { 
             Write-Error "错误：下载的 OpenCV 文件大小异常，可能不是完整安装包！"
             exit 1
         }
 
         New-Item -ItemType Directory -Path $opencv_install_dir -Force
-        7z.exe x $opencv_zip -o"$opencv_install_dir" > $null # 隐藏 7z 输出，如果不需要详细日志
+        7z.exe x $opencv_zip -o"$opencv_install_dir" > $null
         if (-Not (Test-Path "$opencv_install_dir/opencv")) {
             Write-Error "错误：OpenCV 未能正确解压到 $opencv_install_dir/opencv"
             exit 1
@@ -71,20 +72,19 @@ jobs:
 
         Copy-Item -Path "python/setup.py" -Destination "python/setup_modified.py" -Force
         $setup_content = Get-Content "python/setup_modified.py"
-        # 这一行的语法在 PowerShell Core 中是完全正确的，旧版 PowerShell 可能是解析问题
         $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""', ('opencv_root = "' + $opencv_install_dir + '/opencv/build"')
         Set-Content -Path "python/setup_modified.py" -Value $new_setup_content
       working-directory: .
 
     - name: 编译 pyAAMED 扩展模块
-      shell: pwsh # 👈 修正：强制使用 PowerShell Core
+      shell: pwsh
       run: |
-        $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
+        $OutputEncoding = [System.Text.Encoding]::UTF8
         python setup_modified.py build_ext --inplace
       working-directory: ./python
       
     - name: 验证编译输出并收集产物
-      shell: pwsh # 👈 修正：强制使用 PowerShell Core
+      shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
         Write-Host "正在查找编译产物..."
@@ -95,7 +95,6 @@ jobs:
         }
         Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
         
-        # 将 OpenCV 的 DLL 复制到 pyd 文件旁边，确保运行时能找到
         $opencv_dll_source_path_vc16 = "$opencv_install_dir/opencv/build/x64/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
         $opencv_dll_source_path_vc17 = "$opencv_install_dir/opencv/build/x64/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
         $opencv_dll_destination_path = "python/"
