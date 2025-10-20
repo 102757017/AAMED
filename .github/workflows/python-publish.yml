@@ -9,9 +9,6 @@ on:
 
 jobs:
   build_windows:
-    # 核心修正：不再使用不稳定的 'windows-latest' (当前指向 Windows 2025)，
-    # 而是明确指定一个稳定且工具支持全面的 'windows-2022' 运行器。
-    # 这将同时解决 Python 3.8 找不到和操作被取消的问题。
     runs-on: windows-2022
 
     env:
@@ -21,7 +18,8 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.8.18", "3.11"]
+        # 修正1：根据官方版本清单，为 windows-2022 选择明确存在的 Python 3.8.10 版本。
+        python-version: ["3.8.10", "3.11"]
 
     steps:
     - name: 检出仓库代码
@@ -33,9 +31,9 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - name: 设置 MSVC C++ 编译环境
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: 'x64'
+      # 修正2：使用官方维护的 setup-msbuild action。
+      # 它会可靠地将 MSVC 编译/链接工具 (如 cl.exe) 添加到 PATH 中，解决了环境设置失败的问题。
+      uses: microsoft/setup-msbuild@v2
 
     - name: 安装依赖 (NumPy 和 OpenCV-Python)
       shell: powershell
@@ -61,7 +59,8 @@ jobs:
 
         Copy-Item -Path "python/setup.py" -Destination "python/setup_modified.py"
         $setup_content = Get-Content "python/setup_modified.py"
-        $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""','opencv_root = "' + $opencv_install_dir + '/opencv/build"'
+        # 使用单引号和 -replace 操作符来简化字符串处理，避免复杂的转义
+        $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""', ('opencv_root = "' + $opencv_install_dir + '/opencv/build"')
         Set-Content -Path "python/setup_modified.py" -Value $new_setup_content
       working-directory: .
 
@@ -74,15 +73,21 @@ jobs:
     - name: 验证编译输出并收集产物
       shell: powershell
       run: |
-        Get-ChildItem -Path . -Filter "pyAAMED*.pyd" -Recurse
-        Get-ChildItem -Path . -Filter "*.dll" -Recurse
-        
-        $dll_name = "opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
-        if (-Not (Test-Path "$PWD/$dll_name")) {
-            Write-Error "编译完成后未找到 $dll_name 文件。可能出现问题。"
+        Write-Host "正在查找编译产物..."
+        $pyd_files = Get-ChildItem -Path . -Filter "pyAAMED*.pyd" -Recurse
+        if ($null -eq $pyd_files) {
+            Write-Error "错误：未找到编译生成的 .pyd 文件！"
             exit 1
         }
-        Write-Host "成功找到 $dll_name"
+        Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
+        
+        $dll_name = "opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        $dll_file = Get-ChildItem -Path . -Filter $dll_name -Recurse
+        if ($null -eq $dll_file) {
+            Write-Error "错误：未在工作目录下找到 $dll_name 文件。"
+            exit 1
+        }
+        Write-Host "已找到 DLL 文件: $($dll_file.FullName)"
       working-directory: ./python
 
     - name: 上传编译产物 (pyAAMED.pyd 和 OpenCV DLL)
