@@ -1,0 +1,138 @@
+name: conda 编译 pyAAMED
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build_windows:
+    runs-on: windows-2022
+
+    steps:
+    - name: 检出仓库代码
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive  # 如果项目有子模块需要添加这个
+
+    - name: Set up Miniconda
+      uses: conda-incubator/setup-miniconda@v2
+      with:
+        auto-update-conda: true
+        python-version: 3.11
+        activate-environment: pyaamed-env
+        
+    - name: 创建并激活环境
+      shell: pwsh
+      run: |
+        conda create -n pyaamed-env python=3.11 -y
+        conda activate pyaamed-env
+        conda install -y numpy cython opencv cmake make
+        pip install setuptools wheel
+
+    - name: 检查目录结构
+      shell: pwsh
+      run: |
+        echo "当前目录结构:"
+        Get-ChildItem -Recurse -Depth 2 | Select-Object Name, FullName
+        echo "Python目录内容:"
+        Get-ChildItem "./python" -Recurse
+
+    - name: 编译 pyAAMED 扩展模块
+      shell: pwsh
+      run: |
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        conda activate pyaamed-env
+        cd ./python
+        python setup.py build_ext --inplace
+      working-directory: ./
+
+    - name: 验证编译输出并收集产物
+      shell: pwsh
+      run: |
+        conda activate pyaamed-env
+        
+        # 创建产物目录
+        New-Item -ItemType Directory -Path "artifacts" -Force
+        
+        echo "=== 查找生成的 pyd 文件 ==="
+        $pydFiles = Get-ChildItem -Path "." -Recurse -Filter "*.pyd"
+        foreach ($file in $pydFiles) {
+            echo "找到 pyd 文件: $($file.FullName)"
+            Copy-Item $file.FullName -Destination "artifacts/"
+        }
+        
+        echo "=== 查找 pyAAMED 相关文件 ==="
+        $pythonDirFiles = Get-ChildItem -Path "./python" -Filter "pyAAMED*"
+        foreach ($file in $pythonDirFiles) {
+            echo "找到文件: $($file.Name)"
+            if ($file.Extension -eq ".pyd" -or $file.Extension -eq ".dll") {
+                Copy-Item $file.FullName -Destination "artifacts/"
+            }
+        }
+        
+        # 查找并复制 OpenCV DLL 依赖
+        echo "=== 查找 OpenCV DLL 依赖 ==="
+        $condaEnvPath = conda info --base
+        $opencvDllPath = "$condaEnvPath\envs\pyaamed-env\Library\bin"
+        
+        if (Test-Path $opencvDllPath) {
+            echo "在 $opencvDllPath 中查找 OpenCV DLL"
+            $opencvDlls = Get-ChildItem -Path $opencvDllPath -Filter "opencv*.dll"
+            foreach ($dll in $opencvDlls) {
+                echo "复制 OpenCV DLL: $($dll.Name)"
+                Copy-Item $dll.FullName -Destination "artifacts/"
+            }
+        }
+        
+        # 查找其他可能的依赖 DLL
+        echo "=== 查找其他运行时 DLL ==="
+        $runtimeDlls = @("vcruntime140.dll", "msvcp140.dll", "concrt140.dll")
+        foreach ($dll in $runtimeDlls) {
+            $dllPath = "$condaEnvPath\envs\pyaamed-env\Library\bin\$dll"
+            if (Test-Path $dllPath) {
+                echo "复制运行时 DLL: $dll"
+                Copy-Item $dllPath -Destination "artifacts/"
+            }
+        }
+        
+        # 显示最终产物
+        echo "=== 最终产物列表 ==="
+        Get-ChildItem -Path "artifacts" -Recurse
+
+
+    - name: 打包产物
+      shell: pwsh
+      run: |
+        # 创建版本信息
+        $version = Get-Date -Format "yyyyMMdd-HHmmss"
+        $zipName = "pyAAMED-windows-$version.zip"
+        
+        # 压缩产物
+        Compress-Archive -Path "artifacts/*" -DestinationPath $zipName
+        
+        echo "生成压缩包: $zipName"
+        Get-ChildItem -Filter "*.zip"
+
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: pyAAMED-windows-build
+        path: |
+          artifacts/
+          *.zip
+        retention-days: 30
+
+    - name: 显示构建信息
+      shell: pwsh
+      run: |
+        conda activate pyaamed-env
+        echo "=== 构建环境信息 ==="
+        python --version
+        conda list opencv
+        conda list numpy
+        conda list cython
+        echo "=== Python 路径 ==="
+        python -c "import sys; print('\n'.join(sys.path))"
