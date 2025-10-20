@@ -40,7 +40,7 @@ jobs:
         pip install Cython numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
-    - name: 下载并准备 OpenCV C++ 库 (健壮版)
+    - name: 下载并准备 OpenCV C++ 库 (修正 IndentationError 版本)
       shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -106,16 +106,36 @@ jobs:
             Write-Host "已在 setup_modified.py 顶部添加 'import os'。"
         }
         
-        # 第二遍遍历：替换动态获取 opencv_src_version 的代码行
+        # 第二遍遍历：替换动态获取 opencv_src_version 的代码行，并跳过随后的缩进部分
         $final_setup_content_lines = @()
+        $in_subprocess_block = $false # 新标志，指示我们是否在一个 subprocess.check_output 块中
+        $subprocess_block_start_indent = -1 # 记录块开始时的缩进级别
         $version_line_replaced = $false
-        foreach ($line in $temp_modified_lines) {
+
+        for ($i = 0; $i -lt $temp_modified_lines.Count; $i++) {
+            $line = $temp_modified_lines[$i]
+            $current_line_indent = ($line -replace '^(\s*).*', '$1').Length # 获取当前行前导空白的长度
+
             if ($line -match 'opencv_src_version\s*=\s*subprocess\.check_output') {
                 $final_setup_content_lines += "opencv_src_version = os.environ.get('OPENCV_VERSION', '$($env:OPENCV_VERSION)')"
-                Write-Host "已替换 setup_modified.py 中动态获取 opencv_src_version 的代码行。"
+                Write-Host "已替换 setup_modified.py 中动态获取 opencv_src_version 的起始代码行。"
+                $in_subprocess_block = $true
                 $version_line_replaced = $true
+                $subprocess_block_start_indent = ($line -replace '^(\s*).*', '$1').Length # 记录起始行的缩进
+            } elseif ($in_subprocess_block) {
+                # 如果我们在块中，并且当前行比起始行缩进更深，或者是一个空行但仍在块的缩进范围内
+                if ($current_line_indent -gt $subprocess_block_start_indent -or ($line.Trim() -eq '' -and $current_line_indent -ge $subprocess_block_start_indent)) {
+                    Write-Host "跳过原始 subprocess 调用中的缩进行或空白行: $line"
+                    # 不将此行添加到最终内容中
+                } else {
+                    # 当前行缩进不再比起始行深，或者缩进相同但不是空行，表示块结束
+                    $in_subprocess_block = $false
+                    $subprocess_block_start_indent = -1 # 重置缩进记录
+                    $final_setup_content_lines += $line # 添加当前行，因为它是块外部的第一行
+                    Write-Host "检测到 subprocess.check_output 块结束。添加行: $line"
+                }
             } else {
-                $final_setup_content_lines += $line
+                $final_setup_content_lines += $line # 添加常规行
             }
         }
 
@@ -125,6 +145,7 @@ jobs:
         }
         
         # 将修改后的行数组用换行符连接起来，并写入文件
+        # PowerShell 的 Set-Content 会自动处理数组和换行符，但为了明确，我们仍使用 -join "`n"
         Set-Content -Path "python/setup_modified.py" -Value ($final_setup_content_lines -join "`n")
 
       working-directory: .
@@ -156,7 +177,7 @@ jobs:
             Write-Host "在 vc16 路径找到了 DLL：$opencv_dll_source_path"
         } 
         elseif (Test-Path "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
-            $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+            $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env:OPENCV_BUILD_VERSION }}.dll"
             Write-Host "在 vc17 路径找到了 DLL：$opencv_dll_source_path"
         } else {
             Write-Error "错误: 在预期的 OpenCV 解压路径中未找到需要的 DLL (vc16 或 vc17): $($opencv_dll_path_base)/vc16/bin 或 $($opencv_dll_path_base)/vc17/bin"
