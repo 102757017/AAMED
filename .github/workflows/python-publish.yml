@@ -14,7 +14,7 @@ jobs:
     env:
       OPENCV_VERSION: "4.10.0"
       OPENCV_PYTHON_VERSION: "4.10.0.84"
-      OPENCV_BUILD_VERSION: "4100" # 用于 setup.py 获取版本，例如 "4100" 代表 4.10.0
+      OPENCV_BUILD_VERSION: "4100" # 用于 setup_modified.py 获取版本，例如 "4100" 代表 4.10.0
 
     strategy:
       matrix:
@@ -79,8 +79,7 @@ jobs:
             Write-Warning "MSYS2 安装路径 ($msys2_bin_path) 未找到。如果 setup.py 依赖 pkg-config，这可能导致失败。"
         }
 
-        # ✨ 关键修正：OPENCV_ROOT 应该指向 opencv 文件夹的根目录，而不是 build 文件夹
-        # 例如 D:/opencv-manually-built/opencv
+        # OPENCV_ROOT 应该指向 opencv 文件夹的根目录，例如 D:/opencv-manually-built/opencv
         Add-Content -Path $env:GITHUB_ENV -Value "OPENCV_ROOT=$($opencv_install_dir)/opencv"
         Write-Host "已设置环境变量 OPENCV_ROOT=$($opencv_install_dir)/opencv (通过 GITHUB_ENV)。"
 
@@ -106,14 +105,15 @@ jobs:
         }
         Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
         
-        # 这个路径是正确的，因为它基于 $opencv_install_dir/opencv/build
         $opencv_dll_path_base = "$opencv_install_dir/opencv/build/x64"
         $opencv_dll_source_path = ""
 
+        # ✨ 关键修正：将 DLL 查找路径优先指向 VC16
         if (Test-Path "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
             $opencv_dll_source_path = "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
             Write-Host "在 vc16 路径找到了 DLL：$opencv_dll_source_path"
-        } 
+        }
+        # 如果 vc16 不存在，再尝试 vc17 (作为备用选项，但我们期望 vc16 存在)
         elseif (Test-Path "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
             $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
             Write-Host "在 vc17 路径找到了 DLL：$opencv_dll_source_path"

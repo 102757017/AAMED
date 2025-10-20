@@ -22,12 +22,10 @@ except ImportError:
 
 # Manually installed OpenCV procedure for Windows
 if opencv_root:
-    # 移除 shutil 导入，因为不再需要其 copy 功能
-    # import shutil 
-
     # OPENCV_ROOT 环境变量现在被设置为 D:/opencv-manually-built/opencv
     # 所以需要重新添加 "build/" 路径组件
-    opencv_bin = Path(opencv_root) / "build/x64/vc17/bin" # <-- 修正：添加 "build/"
+    # ✨ 关键修正：将 vc17 更改为 vc16
+    opencv_bin = Path(opencv_root) / "build/x64/vc16/bin"
     
     # 从环境变量 OPENCV_BUILD_VERSION 获取 OpenCV 的构建版本 (例如 "4100")
     opencv_src_version = os.environ.get("OPENCV_BUILD_VERSION", "-1")
@@ -35,13 +33,13 @@ if opencv_root:
     if version != opencv_src_version:
         sys.exit(f"Version mismatch: Python OpenCV ({version}) and installed OpenCV ({opencv_src_version} from env)")
 
-    opencv_include = Path(opencv_root) / "build/include" # <-- 修正：添加 "build/"
-    opencv_lib_dirs = Path(opencv_root) / "build/x64/vc17/lib" # <-- 修正：添加 "build/"
+    opencv_include = Path(opencv_root) / "build/include" 
+    # ✨ 关键修正：将 vc17 更改为 vc16
+    opencv_lib_dirs = Path(opencv_root) / "build/x64/vc16/lib" 
     extra_compile_args = ["/TP"]
     libraries = [f"opencv_world{opencv_src_version}"]
 
-    # 🎯 关键修正：删除这一行，DLL 复制已由 GitHub Actions 的 PowerShell 步骤处理
-    # shutil.copy(str(opencv_bin / f"opencv_world{opencv_src_version}.dll"), ".")
+    # DLL 复制已由 GitHub Actions 的 PowerShell 步骤处理，这里不需要
 
 
 # Attempt to automatically find the associated OpenCV header 
