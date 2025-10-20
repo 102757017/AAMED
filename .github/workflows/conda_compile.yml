@@ -15,7 +15,7 @@ jobs:
     - name: 检出仓库代码
       uses: actions/checkout@v4
       with:
-        submodules: recursive  # 如果项目有子模块需要添加这个
+        submodules: recursive
 
     - name: Set up Miniconda
       uses: conda-incubator/setup-miniconda@v2
@@ -23,35 +23,59 @@ jobs:
         auto-update-conda: true
         python-version: 3.11
         activate-environment: pyaamed-env
+        channels: conda-forge,defaults
         
-    - name: 创建并激活环境
+    - name: 安装必要的包
       shell: pwsh
       run: |
-        conda create -n pyaamed-env python=3.11 -y
-        conda activate pyaamed-env
-        conda install -y numpy cython opencv cmake make
+        # 刷新环境变量确保conda可用
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        
+        # 安装所有必要的包到激活的环境中
+        conda install -y numpy cython opencv cmake compilers
         pip install setuptools wheel
+        
+        # 验证安装
+        python -c "import Cython; print('Cython版本:', Cython.__version__)"
+        python -c "import numpy; print('NumPy版本:', numpy.__version__)"
+        python -c "import cv2; print('OpenCV版本:', cv2.__version__)"
 
     - name: 检查目录结构
       shell: pwsh
       run: |
         echo "当前目录结构:"
-        Get-ChildItem -Recurse -Depth 2 | Select-Object Name, FullName
+        Get-ChildItem -Recurse -Depth 2 | Select-Object Name
         echo "Python目录内容:"
-        Get-ChildItem "./python" -Recurse
+        if (Test-Path "./python") {
+            Get-ChildItem "./python"
+        }
 
     - name: 编译 pyAAMED 扩展模块
       shell: pwsh
       run: |
+        # 确保环境变量正确
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        
+        # 验证环境
+        conda info --envs
         conda activate pyaamed-env
+        
+        # 再次验证Cython可用
+        python -c "import Cython; print('Cython可用')"
+        
+        # 编译
+        echo "开始编译..."
         cd ./python
         python setup.py build_ext --inplace
-      working-directory: ./
+        
+        echo "编译完成，检查生成的文件:"
+        Get-ChildItem -Filter "*.pyd"
+        Get-ChildItem -Filter "*.dll"
 
     - name: 验证编译输出并收集产物
       shell: pwsh
       run: |
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
         conda activate pyaamed-env
         
         # 创建产物目录
@@ -59,17 +83,23 @@ jobs:
         
         echo "=== 查找生成的 pyd 文件 ==="
         $pydFiles = Get-ChildItem -Path "." -Recurse -Filter "*.pyd"
-        foreach ($file in $pydFiles) {
-            echo "找到 pyd 文件: $($file.FullName)"
-            Copy-Item $file.FullName -Destination "artifacts/"
+        if ($pydFiles) {
+            foreach ($file in $pydFiles) {
+                echo "找到 pyd 文件: $($file.FullName)"
+                Copy-Item $file.FullName -Destination "artifacts/"
+            }
+        } else {
+            echo "未找到 pyd 文件"
         }
         
         echo "=== 查找 pyAAMED 相关文件 ==="
-        $pythonDirFiles = Get-ChildItem -Path "./python" -Filter "pyAAMED*"
-        foreach ($file in $pythonDirFiles) {
-            echo "找到文件: $($file.Name)"
-            if ($file.Extension -eq ".pyd" -or $file.Extension -eq ".dll") {
-                Copy-Item $file.FullName -Destination "artifacts/"
+        if (Test-Path "./python") {
+            $pythonDirFiles = Get-ChildItem -Path "./python" -Filter "pyAAMED*"
+            foreach ($file in $pythonDirFiles) {
+                echo "找到文件: $($file.Name)"
+                if ($file.Extension -eq ".pyd" -or $file.Extension -eq ".dll") {
+                    Copy-Item $file.FullName -Destination "artifacts/"
+                }
             }
         }
         
@@ -85,16 +115,19 @@ jobs:
                 echo "复制 OpenCV DLL: $($dll.Name)"
                 Copy-Item $dll.FullName -Destination "artifacts/"
             }
-        }
-        
-        # 查找其他可能的依赖 DLL
-        echo "=== 查找其他运行时 DLL ==="
-        $runtimeDlls = @("vcruntime140.dll", "msvcp140.dll", "concrt140.dll")
-        foreach ($dll in $runtimeDlls) {
-            $dllPath = "$condaEnvPath\envs\pyaamed-env\Library\bin\$dll"
-            if (Test-Path $dllPath) {
-                echo "复制运行时 DLL: $dll"
-                Copy-Item $dllPath -Destination "artifacts/"
+        } else {
+            echo "未找到 OpenCV DLL 路径: $opencvDllPath"
+            # 尝试其他可能的路径
+            $alternativePaths = @(
+                "$condaEnvPath\Library\bin",
+                "$condaEnvPath\envs\pyaamed-env\DLLs",
+                "$condaEnvPath\DLLs"
+            )
+            foreach ($path in $alternativePaths) {
+                if (Test-Path $path) {
+                    echo "在备选路径 $path 中查找 DLL"
+                    Get-ChildItem -Path $path -Filter "*.dll" | Select-Object -First 3
+                }
             }
         }
         
@@ -106,15 +139,19 @@ jobs:
     - name: 打包产物
       shell: pwsh
       run: |
-        # 创建版本信息
-        $version = Get-Date -Format "yyyyMMdd-HHmmss"
-        $zipName = "pyAAMED-windows-$version.zip"
-        
-        # 压缩产物
-        Compress-Archive -Path "artifacts/*" -DestinationPath $zipName
-        
-        echo "生成压缩包: $zipName"
-        Get-ChildItem -Filter "*.zip"
+        if (Test-Path "./artifacts") {
+            # 创建版本信息
+            $version = Get-Date -Format "yyyyMMdd-HHmmss"
+            $zipName = "pyAAMED-windows-$version.zip"
+            
+            # 压缩产物
+            Compress-Archive -Path "artifacts/*" -DestinationPath $zipName
+            
+            echo "生成压缩包: $zipName"
+            Get-ChildItem -Filter "*.zip"
+        } else {
+            echo "没有产物可打包"
+        }
 
     - name: 上传构建产物
       uses: actions/upload-artifact@v4
@@ -124,10 +161,12 @@ jobs:
           artifacts/
           *.zip
         retention-days: 30
+      if: success() || failure()  # 即使失败也上传日志
 
     - name: 显示构建信息
       shell: pwsh
       run: |
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
         conda activate pyaamed-env
         echo "=== 构建环境信息 ==="
         python --version
