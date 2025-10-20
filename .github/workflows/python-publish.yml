@@ -13,12 +13,11 @@ jobs:
 
     env:
       OPENCV_VERSION: "4.10.0"
-      OPENCV_PYTHON_VERSION: "4.10.0.84" # 👈 修正：恢复此行，确保版本变量可用！
+      OPENCV_PYTHON_VERSION: "4.10.0.84"
       OPENCV_BUILD_VERSION: "4100"
 
     strategy:
       matrix:
-        # 修正：根据您的建议，移除 Python 3.8，只编译 Python 3.11。
         python-version: ["3.11"]
 
     steps:
@@ -34,23 +33,22 @@ jobs:
       uses: microsoft/setup-msbuild@v2
 
     - name: 安装依赖 (NumPy 和 OpenCV-Python)
-      shell: powershell
+      shell: pwsh # 👈 修正：强制使用 PowerShell Core
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
         python -m pip install --upgrade pip
-        # 现在 OPENCV_PYTHON_VERSION 变量已正确定义，此命令将正常执行
         pip install numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
     - name: 下载并准备 OpenCV C++ 库 (健壮版)
-      shell: powershell
+      shell: pwsh # 👈 修正：强制使用 PowerShell Core
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
 
         $opencv_version = "${{ env.OPENCV_VERSION }}"
         $opencv_zip = "opencv-$opencv_version-windows.exe"
         $opencv_install_dir = "D:/opencv-manually-built"
-        $download_url = "https://github.com/opencv/opencv/releases/download/$opencv_version/$opencv_zip"
+        $download_url = "https://github.com/opencv/opencv/releases/download/$opencv_version/$opencv_zip" # 此链接实际上是正确的
 
         Write-Host "正在从官方 GitHub Releases 下载 OpenCV $opencv_version..."
         curl -L -o $opencv_zip $download_url --retry 3 --retry-delay 5
@@ -63,9 +61,7 @@ jobs:
         }
 
         New-Item -ItemType Directory -Path $opencv_install_dir -Force
-        # 使用 -t 参数指定目标目录
         7z.exe x $opencv_zip -o"$opencv_install_dir" > $null # 隐藏 7z 输出，如果不需要详细日志
-        # 验证解压后文件夹是否存在
         if (-Not (Test-Path "$opencv_install_dir/opencv")) {
             Write-Error "错误：OpenCV 未能正确解压到 $opencv_install_dir/opencv"
             exit 1
@@ -75,23 +71,24 @@ jobs:
 
         Copy-Item -Path "python/setup.py" -Destination "python/setup_modified.py" -Force
         $setup_content = Get-Content "python/setup_modified.py"
+        # 这一行的语法在 PowerShell Core 中是完全正确的，旧版 PowerShell 可能是解析问题
         $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""', ('opencv_root = "' + $opencv_install_dir + '/opencv/build"')
         Set-Content -Path "python/setup_modified.py" -Value $new_setup_content
       working-directory: .
 
     - name: 编译 pyAAMED 扩展模块
-      shell: powershell
+      shell: pwsh # 👈 修正：强制使用 PowerShell Core
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
         python setup_modified.py build_ext --inplace
       working-directory: ./python
       
     - name: 验证编译输出并收集产物
-      shell: powershell
+      shell: pwsh # 👈 修正：强制使用 PowerShell Core
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
         Write-Host "正在查找编译产物..."
-        $pyd_files = Get-ChildItem -Path python -Filter "pyAAMED*.pyd" -Recurse # 确保在 python 子目录中查找
+        $pyd_files = Get-ChildItem -Path python -Filter "pyAAMED*.pyd" -Recurse
         if ($null -eq $pyd_files) {
             Write-Error "错误：未在 'python/' 目录中找到编译生成的 .pyd 文件！"
             exit 1
@@ -99,24 +96,25 @@ jobs:
         Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
         
         # 将 OpenCV 的 DLL 复制到 pyd 文件旁边，确保运行时能找到
-        # 注意：这里可能需要根据实际 OpenCV 解压后的路径调整
-        $opencv_dll_source_path = "$opencv_install_dir/opencv/build/x64/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
-        $opencv_dll_destination_path = "python/" # 复制到 python 目录
+        $opencv_dll_source_path_vc16 = "$opencv_install_dir/opencv/build/x64/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        $opencv_dll_source_path_vc17 = "$opencv_install_dir/opencv/build/x64/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        $opencv_dll_destination_path = "python/"
         
-        if (-Not (Test-Path $opencv_dll_source_path)) {
-            Write-Error "错误: 在预期的 OpenCV 解压路径中未找到需要的 DLL: $opencv_dll_source_path"
-            # 尝试查找其他可能的 DLL 路径，例如 vc17
-            $vc17_dll_path = "$opencv_install_dir/opencv/build/x64/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
-            if (Test-Path $vc17_dll_path) {
-                Write-Host "在 $vc17_dll_path 找到了 DLL，将使用此路径。"
-                $opencv_dll_source_path = $vc17_dll_path
-            } else {
-                exit 1 # 如果 vc17 也没有找到，则彻底失败
-            }
+        $source_dll_to_copy = ""
+        if (Test-Path $opencv_dll_source_path_vc16) {
+            $source_dll_to_copy = $opencv_dll_source_path_vc16
+            Write-Host "在vc16路径找到了DLL：$source_dll_to_copy"
+        } elseif (Test-Path $opencv_dll_source_path_vc17) {
+            $source_dll_to_copy = $opencv_dll_source_path_vc17
+            Write-Host "在vc17路径找到了DLL：$source_dll_to_copy"
+        } else {
+            Write-Error "错误: 在预期的 OpenCV 解压路径中未找到需要的 DLL (vc16 或 vc17): $opencv_dll_source_path_vc16 或 $opencv_dll_source_path_vc17"
+            exit 1
         }
-        Copy-Item -Path $opencv_dll_source_path -Destination $opencv_dll_destination_path -Force
-        Write-Host "已将 OpenCV DLL 从 '$opencv_dll_source_path' 复制到 '$opencv_dll_destination_path'"
-      working-directory: . # 注意：这里是仓库根目录，因为前面有 python/ 路径限定
+
+        Copy-Item -Path $source_dll_to_copy -Destination $opencv_dll_destination_path -Force
+        Write-Host "已将 OpenCV DLL 从 '$source_dll_to_copy' 复制到 '$opencv_dll_destination_path'"
+      working-directory: .
 
     - name: 上传编译产物 (pyAAMED.pyd 和 OpenCV DLL)
       uses: actions/upload-artifact@v4
@@ -126,4 +124,3 @@ jobs:
           python/*.pyd
           python/opencv_world*.dll
         retention-days: 7
-
