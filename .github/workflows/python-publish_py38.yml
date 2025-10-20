@@ -1,4 +1,4 @@
-name: 为 Windows 编译 pyAAMED
+name: 为 Windows 编译 pyAAMED python3.8版
 
 on:
   push:
