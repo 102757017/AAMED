@@ -1,44 +1,142 @@
-# 这是一个示例的容错包装（只示意关键部分）。请把它合并到你的原始 setup.py 中适当位置。
-import os
-import subprocess
 import sys
+from pathlib import Path
+from setuptools import setup
+from distutils.extension import Extension
+from Cython.Distutils import build_ext
+import os # <-- 新增：导入 os 模块
 
-def safe_check_output(cmd, **kwargs):
-    # cmd 可为 list 或 string；我们尽量以 list 形式调用
-    try:
-        print("Executing external command:", cmd)
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, **kwargs)
-        return out
-    except FileNotFoundError:
-        # 更友好地报错，提示哪个命令缺失
-        exe = cmd[0] if isinstance(cmd, (list, tuple)) else cmd.split()[0]
-        print(f"ERROR: External command not found in PATH: {exe}", file=sys.stderr)
-        print("Please ensure the command is installed or set OPENCV_ROOT to a valid OpenCV SDK path.", file=sys.stderr)
-        raise
-    except subprocess.CalledProcessError as e:
-        print("Command failed:", e.cmd)
-        print("Exit code:", e.returncode)
-        print("Output:", e.output.decode(errors='ignore'))
-        raise
+# Manual setup for Windows. These will take precedence over the automatic
+# process below. Make sure the same version of OpenCV is installed in
+# Python as the one installed from source.
+# 
+# Base folder of OpenCV installation. E.g. "D:/opencv"
+# 从环境变量 OPENCV_ROOT 获取 OpenCV 安装的根目录 (例如 D:/opencv-manually-built/opencv/build)
+opencv_root = os.environ.get("OPENCV_ROOT", "") # <-- 修改：从环境变量获取
 
-# 优先使用环境变量 OPENCV_ROOT（由 workflow 写入），fallback 到硬编码路径或自动检测
-OPENCV_ROOT = os.environ.get("OPENCV_ROOT") or ""
-if not OPENCV_ROOT:
-    # 这里可以放你的旧检测逻辑，例如调用某个外部工具来查询路径
-    # 但不要直接假定外部程序存在——使用 safe_check_output 包装
-    try:
-        # 示例：某些 setup.py 可能会调用 opencv_version 或 pkg-config，示例只是演示
-        # out = safe_check_output(["pkg-config", "--modversion", "opencv4"])
-        # print("pkg-config 返回: ", out)
-        pass
-    except Exception:
-        # 忽略，将稍后报错或提示用户
-        pass
+# Check if OpenCV is installed
+try:
+    import cv2
+    # cv2.__version__ 是例如 "4.10.0"，替换 "." 得到 "4100"
+    version = cv2.__version__.replace(".", "")
+except ImportError:
+    sys.exit("Required Python OpenCV package not found.")
 
-# 如果你需要把 OPENCV_ROOT 写进脚本，用 OPENCV_ROOT 变量替换之前的硬编码路径
-print("Using OPENCV_ROOT =", OPENCV_ROOT)
 
-# 下面继续你原有的 setup()、Extension(...) 配置逻辑，确保在链接库、include_dirs 等地方使用 OPENCV_ROOT 路径：
-# example:
-# include_dirs = [ os.path.join(OPENCV_ROOT, 'include'), ... ]
-# library_dirs = [ os.path.join(OPENCV_ROOT, 'lib'), ... ]
+# Manually installed OpenCV procedure for Windows
+if opencv_root:
+    # 不再需要 subprocess 来获取 opencv_src_version，直接依赖环境变量。
+    # import subprocess # <-- 删除：不再需要
+
+    import shutil
+
+    # OPENCV_ROOT 环境变量被设置为 D:/opencv-manually-built/opencv/build
+    # 所以这里的 Path 应该直接在其下寻找 x64/vc17/bin 等
+
+    # 假设 OpenCV 的 Build 目录结构为 {OPENCV_ROOT}/x64/vc17/bin
+    opencv_bin = Path(opencv_root) / "x64/vc17/bin" # <-- 修改：移除 "build/" 并明确使用 "vc17"
+    
+    # 从环境变量 OPENCV_BUILD_VERSION 获取 OpenCV 的构建版本 (例如 "4100")
+    opencv_src_version = os.environ.get("OPENCV_BUILD_VERSION", "-1") # <-- 修改：从环境变量获取版本
+
+    if version != opencv_src_version:
+        sys.exit(f"Version mismatch: Python OpenCV ({version}) and installed OpenCV ({opencv_src_version} from env)")
+
+    # 包含目录为 {OPENCV_ROOT}/include
+    opencv_include = Path(opencv_root) / "include" # <-- 修改：移除 "build/"
+    # 库文件目录为 {OPENCV_ROOT}/x64/vc17/lib
+    opencv_lib_dirs = Path(opencv_root) / "x64/vc17/lib" # <-- 修改：移除 "build/" 并明确使用 "vc17"
+    extra_compile_args = ["/TP"]
+    libraries = [f"opencv_world{opencv_src_version}"] # <-- 修改：使用环境变量获取的版本
+
+    # Need to copy opencv_world to installation folder  
+    # so Python will successfully find the OpenCV library
+    shutil.copy(str(opencv_bin / f"opencv_world{opencv_src_version}.dll"), ".") # <-- 修改：使用环境变量获取的版本
+
+
+# Attempt to automatically find the associated OpenCV header 
+# and library files for the current Python installation.
+else:
+    import sysconfig
+
+    base = Path(sysconfig.get_config_var("base"))
+    extra_compile_args = []
+
+    if sys.platform.startswith("win32"):
+        opencv_include = base / "Library/include"
+        opencv_lib_dirs = base / "Library/lib"
+        extra_compile_args += ["/TP"]
+        libraries = [
+            f"opencv_core{version}",
+            f"opencv_highgui{version}",
+            f"opencv_imgproc{version}",
+            f"opencv_imgcodecs{version}",
+            f"opencv_flann{version}",
+        ]
+
+    elif sys.platform.startswith("linux"):
+        opencv_include = base / "include/opencv4"
+        opencv_lib_dirs = base / "lib"
+        libraries = [
+            "opencv_core", 
+            "opencv_highgui", 
+            "opencv_imgproc", 
+            "opencv_imgcodecs", 
+            "opencv_flann"
+        ]
+
+    else:
+        sys.exit("System platform build process not yet implemented.")
+
+
+# Obtain the numpy include directory. This logic works across numpy versions.
+import numpy as np
+try:
+    numpy_include = np.get_include()
+except AttributeError:
+    numpy_include = np.get_numpy_include()
+
+
+ext_modules = [
+    Extension(
+        "pyAAMED",
+        [
+            "../src/adaptApproximateContours.cpp",
+            "../src/adaptApproxPolyDP.cpp",
+            "../src/Contours.cpp",
+            "../src/EllipseNonMaximumSuppression.cpp",
+            "../src/FLED.cpp",
+            "../src/FLED_drawAndWriteFunctions.cpp",
+            "../src/FLED_Initialization.cpp",
+            "../src/FLED_PrivateFunctions.cpp",
+            "../src/Group.cpp",
+            "../src/LinkMatrix.cpp",
+            "../src/Node_FC.cpp",
+            "../src/Segmentation.cpp",
+            "../src/Validation.cpp",
+            "pyAAMED.pyx"
+        ],
+        include_dirs = [
+            str(opencv_include),
+            numpy_include,
+            "FLED"
+        ],
+        language = "c++",
+        extra_compile_args = extra_compile_args,
+        libraries = libraries,
+        library_dirs = [str(opencv_lib_dirs)] # 将 opencv_lib_dirs 转换为字符串
+    ),
+]
+
+
+class custom_build_ext(build_ext):
+    def build_extensions(self):
+        build_ext.build_extensions(self)
+
+
+setup(
+    name = "pyaamed",
+    ext_modules = ext_modules,
+    cmdclass = {"build_ext": custom_build_ext},
+)
+
+print("Build done")

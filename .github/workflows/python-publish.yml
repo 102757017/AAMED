@@ -14,7 +14,7 @@ jobs:
     env:
       OPENCV_VERSION: "4.10.0"
       OPENCV_PYTHON_VERSION: "4.10.0.84"
-      OPENCV_BUILD_VERSION: "4100"
+      OPENCV_BUILD_VERSION: "4100" # 用于 setup.py 获取版本，例如 "4100" 代表 4.10.0
 
     strategy:
       matrix:
@@ -40,7 +40,7 @@ jobs:
         pip install Cython numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
-    - name: 下载并准备 OpenCV C++ 库 (修正 IndentationError 版本)
+    - name: 下载并准备 OpenCV C++ 库
       shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -69,6 +69,7 @@ jobs:
 
         Write-Host "OpenCV 已解压到: $opencv_install_dir/opencv"
 
+        # 确保 MSYS2 的 bin 目录在 PATH 中 (如果仍需要 pkg-config)
         Write-Host "检查并添加 MSYS2 bin 目录到 PATH..."
         $msys2_bin_path = "C:\msys64\usr\bin"
         if (Test-Path $msys2_bin_path) {
@@ -78,75 +79,10 @@ jobs:
             Write-Warning "MSYS2 安装路径 ($msys2_bin_path) 未找到。如果 setup.py 依赖 pkg-config，这可能导致失败。"
         }
 
+        # 设置 OPENCV_ROOT 环境变量，供 setup_modified.py 使用
+        # 它应该指向 OpenCV build 目录，例如 D:/opencv-manually-built/opencv/build
         Add-Content -Path $env:GITHUB_ENV -Value "OPENCV_ROOT=$($opencv_install_dir)/opencv/build"
         Write-Host "已设置环境变量 OPENCV_ROOT=$($opencv_install_dir)/opencv/build (通过 GITHUB_ENV)。"
-
-        # 🎯 核心修正：修改 setup.py 以禁用动态版本检测，直接使用环境变量提供的版本
-        Copy-Item -Path "python/setup.py" -Destination "python/setup_modified.py" -Force
-        $setup_file_content_lines = Get-Content "python/setup_modified.py" # 直接读取为行数组
-
-        $temp_modified_lines = @()
-        $os_import_present = $false
-        
-        # 第一遍遍历：检查 'import os' 和替换 'opencv_root'
-        foreach ($line in $setup_file_content_lines) {
-            if ($line -match '^\s*import os\s*$') {
-                $os_import_present = $true
-            }
-            if ($line -match 'opencv_root\s*=\s*""') {
-                $temp_modified_lines += ('opencv_root = "' + $opencv_install_dir + '/opencv/build"')
-            } else {
-                $temp_modified_lines += $line
-            }
-        }
-        
-        # 如果文件顶部没有 'import os'，则添加
-        if (-not $os_import_present) {
-            $temp_modified_lines = @("import os") + $temp_modified_lines
-            Write-Host "已在 setup_modified.py 顶部添加 'import os'。"
-        }
-        
-        # 第二遍遍历：替换动态获取 opencv_src_version 的代码行，并跳过随后的缩进部分
-        $final_setup_content_lines = @()
-        $in_subprocess_block = $false # 新标志，指示我们是否在一个 subprocess.check_output 块中
-        $subprocess_block_start_indent = -1 # 记录块开始时的缩进级别
-        $version_line_replaced = $false
-
-        for ($i = 0; $i -lt $temp_modified_lines.Count; $i++) {
-            $line = $temp_modified_lines[$i]
-            $current_line_indent = ($line -replace '^(\s*).*', '$1').Length # 获取当前行前导空白的长度
-
-            if ($line -match 'opencv_src_version\s*=\s*subprocess\.check_output') {
-                $final_setup_content_lines += "opencv_src_version = os.environ.get('OPENCV_VERSION', '$($env:OPENCV_VERSION)')"
-                Write-Host "已替换 setup_modified.py 中动态获取 opencv_src_version 的起始代码行。"
-                $in_subprocess_block = $true
-                $version_line_replaced = $true
-                $subprocess_block_start_indent = ($line -replace '^(\s*).*', '$1').Length # 记录起始行的缩进
-            } elseif ($in_subprocess_block) {
-                # 如果我们在块中，并且当前行比起始行缩进更深，或者是一个空行但仍在块的缩进范围内
-                if ($current_line_indent -gt $subprocess_block_start_indent -or ($line.Trim() -eq '' -and $current_line_indent -ge $subprocess_block_start_indent)) {
-                    Write-Host "跳过原始 subprocess 调用中的缩进行或空白行: $line"
-                    # 不将此行添加到最终内容中
-                } else {
-                    # 当前行缩进不再比起始行深，或者缩进相同但不是空行，表示块结束
-                    $in_subprocess_block = $false
-                    $subprocess_block_start_indent = -1 # 重置缩进记录
-                    $final_setup_content_lines += $line # 添加当前行，因为它是块外部的第一行
-                    Write-Host "检测到 subprocess.check_output 块结束。添加行: $line"
-                }
-            } else {
-                $final_setup_content_lines += $line # 添加常规行
-            }
-        }
-
-        if (-not $version_line_replaced) {
-            Write-Warning "未自动替换 setup_modified.py 中动态获取 opencv_src_version 的代码行。请手动检查文件内容，特别是预计的行 30。"
-            Write-Warning "如果行 30 确实是 subprocess.check_output 调用，您可能需要手动调整正则表达式或直接编辑 setup.py。"
-        }
-        
-        # 将修改后的行数组用换行符连接起来，并写入文件
-        # PowerShell 的 Set-Content 会自动处理数组和换行符，但为了明确，我们仍使用 -join "`n"
-        Set-Content -Path "python/setup_modified.py" -Value ($final_setup_content_lines -join "`n")
 
       working-directory: .
 
@@ -172,12 +108,13 @@ jobs:
         $opencv_dll_path_base = "$opencv_install_dir/opencv/build/x64"
         $opencv_dll_source_path = ""
 
+        # 注意这里将 env:OPENEV_BUILD_VERSION 修正为 env.OPENCV_BUILD_VERSION
         if (Test-Path "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
             $opencv_dll_source_path = "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
             Write-Host "在 vc16 路径找到了 DLL：$opencv_dll_source_path"
         } 
         elseif (Test-Path "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
-            $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env:OPENCV_BUILD_VERSION }}.dll"
+            $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll" # 修正此处
             Write-Host "在 vc17 路径找到了 DLL：$opencv_dll_source_path"
         } else {
             Write-Error "错误: 在预期的 OpenCV 解压路径中未找到需要的 DLL (vc16 或 vc17): $($opencv_dll_path_base)/vc16/bin 或 $($opencv_dll_path_base)/vc17/bin"
