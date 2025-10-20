@@ -1,0 +1,171 @@
+name: 为 Windows 编译 pyAAMED
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build_windows:
+    runs-on: windows-2022
+
+    env:
+      OPENCV_VERSION: "4.10.0"
+      OPENCV_PYTHON_VERSION: "4.10.0.84"
+      OPENCV_BUILD_VERSION: "4100" # 用于 setup_modified.py 获取版本，例如 "4100" 代表 4.10.0
+
+    strategy:
+      matrix:
+        python-version: ["3.8"]
+
+    steps:
+    - name: 检出仓库代码
+      uses: actions/checkout@v4
+
+    - name: 设置 Python ${{ matrix.python-version }} 环境
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: 设置 MSVC C++ 编译环境
+      uses: microsoft/setup-msbuild@v2
+
+    - name: 安装依赖 (Cython, NumPy, 和 OpenCV-Python)
+      shell: pwsh
+      run: |
+        $OutputEncoding = [System.Text.Encoding]::UTF8
+        python -m pip install --upgrade pip
+        pip install Cython numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
+      working-directory: ./python
+
+    - name: 下载并准备 OpenCV C++ 库 (新增目录结构调试)
+      shell: pwsh
+      run: |
+        $OutputEncoding = [System.Text.Encoding]::UTF8
+
+        $opencv_version = "${{ env.OPENCV_VERSION }}"
+        $opencv_zip = "opencv-$opencv_version-windows.exe"
+        $opencv_install_dir = "D:/opencv-manually-built"
+        $download_url = "https://github.com/opencv/opencv/releases/download/$opencv_version/$opencv_zip"
+
+        Write-Host "正在从官方 GitHub Releases 下载 OpenCV $opencv_version..."
+        curl -L -o $opencv_zip $download_url --retry 3 --retry-delay 5
+        
+        $file_size_mb = (Get-Item $opencv_zip).Length / 1MB
+        Write-Host "下载完成，文件大小: $($file_size_mb.ToString('F2')) MB"
+        if ($file_size_mb -lt 100) { 
+            Write-Error "错误：下载的 OpenCV 文件大小异常，可能不是完整安装包！"
+            exit 1
+        }
+
+        New-Item -ItemType Directory -Path $opencv_install_dir -Force
+        7z.exe x $opencv_zip -o"$opencv_install_dir" > $null
+        if (-Not (Test-Path "$opencv_install_dir/opencv")) {
+            Write-Error "错误：OpenCV 未能正确解压到 $opencv_install_dir/opencv"
+            exit 1
+        }
+
+        Write-Host "OpenCV 已解压到: $opencv_install_dir/opencv"
+
+        # ✨ 新增调试信息：列出 OpenCV/build/x64/ 目录下的 vcXX 结构和 lib 文件
+        $root_lib_dir_path = "$opencv_install_dir/opencv/build/x64"
+        Write-Host "列出 OpenCV 库根目录 '$root_lib_dir_path' 的内容 (查找 vcXX 目录和 .lib/.dll 文件):"
+        if (Test-Path -Path $root_lib_dir_path -PathType Container) {
+            # 递归列出 vcXX/lib 和 vcXX/bin 目录，以及里面的 .lib 和 .dll 文件
+            Get-ChildItem -Path $root_lib_dir_path -Filter "vc*" -Directory -Recurse -Depth 2 | ForEach-Object {
+                Write-Host "  目录: $($_.FullName)"
+                if (Test-Path -Path "$($_.FullName)/lib" -PathType Container) {
+                    Write-Host "    列出 $($_.FullName)/lib 的 .lib 文件:"
+                    Get-ChildItem -Path "$($_.FullName)/lib" -Filter "*.lib" | Select-Object Name, Length
+                }
+                if (Test-Path -Path "$($_.FullName)/bin" -PathType Container) {
+                    Write-Host "    列出 $($_.FullName)/bin 的 .dll 文件:"
+                    Get-ChildItem -Path "$($_.FullName)/bin" -Filter "*.dll" | Select-Object Name, Length
+                }
+            }
+        } else {
+            Write-Warning "OpenCV 库根目录 '$root_lib_dir_path' 不存在，或者结构异常。"
+        }
+        
+        Write-Host "检查并添加 MSYS2 bin 目录到 PATH..."
+        $msys2_bin_path = "C:\msys64\usr\bin"
+        if (Test-Path $msys2_bin_path) {
+            Add-Content -Path $env:GITHUB_PATH -Value $msys2_bin_path
+            Write-Host "已将 $msys2_bin_path 添加到本次运行的 PATH (通过 GITHUB_PATH)。"
+        } else {
+            Write-Warning "MSYS2 安装路径 ($msys2_bin_path) 未找到。如果 setup.py 依赖 pkg-config，这可能导致失败。"
+        }
+
+        # OPENCV_ROOT 应该指向 opencv 文件夹的根目录，例如 D:/opencv-manually-built/opencv
+        Add-Content -Path $env:GITHUB_ENV -Value "OPENCV_ROOT=$($opencv_install_dir)/opencv"
+        Write-Host "已设置环境变量 OPENCV_ROOT=$($opencv_install_dir)/opencv (通过 GITHUB_ENV)。"
+
+      working-directory: .
+
+    - name: 编译 pyAAMED 扩展模块 (新增 setup.py 调试输出)
+      shell: pwsh
+      run: |
+        $OutputEncoding = [System.Text.Encoding]::UTF8
+        # 使用 setup_modified.py 进行编译
+        python setup_modified.py build_ext --inplace
+      working-directory: ./python
+      
+    - name: 验证编译输出并收集产物
+      shell: pwsh
+      run: |
+        $OutputEncoding = [System.Text.Encoding]::UTF8
+        Write-Host "正在查找编译产物..."
+        $pyd_files = Get-ChildItem -Path python -Filter "pyAAMED*.pyd" -Recurse
+        if ($null -eq $pyd_files) {
+            Write-Error "错误：未在 'python/' 目录中找到编译生成的 .pyd 文件！"
+            exit 1
+        }
+        Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
+        
+        # ✨ 关键修正：使用 env:OPENCV_ROOT 来正确构建 DLL 路径
+        $opencv_build_x64_path = "$env:OPENCV_ROOT/build/x64"
+        Write-Host "OpenCV Build x64 路径 (根据 OPENCV_ROOT): $opencv_build_x64_path"
+
+        $dll_name = "opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        Write-Host "需要寻找的 DLL 名称: $dll_name"
+
+        # 尝试 vc16 和 vc17 路径
+        $vc16_bin_dir = "$opencv_build_x64_path/vc16/bin"
+        $vc17_bin_dir = "$opencv_build_x64_path/vc17/bin"
+
+        $opencv_dll_source_path = ""
+
+        $potential_vc16_dll_full_path = "$vc16_bin_dir/$dll_name"
+        $potential_vc17_dll_full_path = "$vc17_bin_dir/$dll_name"
+
+        Write-Host "尝试在 '$potential_vc16_dll_full_path' 查找 DLL..."
+        if (Test-Path $potential_vc16_dll_full_path) {
+            $opencv_dll_source_path = $potential_vc16_dll_full_path
+            Write-Host "在 vc16 路径找到了 DLL：$opencv_dll_source_path"
+        }
+        
+        if ($opencv_dll_source_path -eq "" -and (Test-Path $potential_vc17_dll_full_path)) {
+            $opencv_dll_source_path = $potential_vc17_dll_full_path
+            Write-Host "在 vc17 路径找到了 DLL：$opencv_dll_source_path"
+        }
+
+        if ($opencv_dll_source_path -eq "") {
+            Write-Error "错误: 在预期的 OpenCV DLL 路径中未找到需要的 DLL ('$dll_name')！请检查: '$vc16_bin_dir' 或 '$vc17_bin_dir'"
+            exit 1
+        }
+
+        $opencv_dll_destination_path = "python/"
+        Copy-Item -Path $opencv_dll_source_path -Destination $opencv_dll_destination_path -Force
+        Write-Host "已将 OpenCV DLL 从 '$opencv_dll_source_path' 复制到 '$opencv_dll_destination_path'"
+      working-directory: .
+
+    - name: 上传编译产物 (pyAAMED.pyd 和 OpenCV DLL)
+      uses: actions/upload-artifact@v4
+      with:
+        name: pyAAMED-py${{ matrix.python-version }}-windows
+        path: |
+          python/*.pyd
+          python/opencv_world*.dll
+        retention-days: 7
