@@ -32,12 +32,13 @@ jobs:
     - name: 设置 MSVC C++ 编译环境
       uses: microsoft/setup-msbuild@v2
 
-    - name: 安装依赖 (NumPy 和 OpenCV-Python)
+    - name: 安装依赖 (Cython, NumPy, 和 OpenCV-Python)
       shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
         python -m pip install --upgrade pip
-        pip install numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
+        # 👈 修正：添加 Cython 模块的安装
+        pip install Cython numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
     - name: 下载并准备 OpenCV C++ 库 (健壮版)
@@ -55,7 +56,6 @@ jobs:
         
         $file_size_mb = (Get-Item $opencv_zip).Length / 1MB
         Write-Host "下载完成，文件大小: $($file_size_mb.ToString('F2')) MB"
-        # 修正：文件大小检查阈值从 500 MB 降低到 100 MB，以适应实际文件大小
         if ($file_size_mb -lt 100) { 
             Write-Error "错误：下载的 OpenCV 文件大小异常，可能不是完整安装包！"
             exit 1
@@ -80,6 +80,7 @@ jobs:
       shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
+        # 现在 Cython 应该已经安装，`build_ext` 应该能正常找到
         python setup_modified.py build_ext --inplace
       working-directory: ./python
       
