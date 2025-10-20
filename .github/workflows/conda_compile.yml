@@ -28,6 +28,10 @@ jobs:
     - name: 在 conda 环境中安装必要的包
       shell: pwsh
       run: |
+        # 设置 UTF-8 编码以避免字符问题
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $env:PYTHONIOENCODING = "utf-8"
+        
         # 确保使用 conda 环境
         conda activate pyaamed-env
         
@@ -35,20 +39,25 @@ jobs:
         conda install -y numpy cython opencv cmake compilers vs2019_win-64 vs2017_win-64
         conda install -y setuptools wheel pip
         
-        # 验证安装 - 这些应该在 conda 环境中运行
-        echo "=== 验证 conda 环境中的包 ==="
-        conda list | grep -E "(numpy|cython|opencv)"
-        python -c "import Cython; print('Cython版本:', Cython.__version__)"
-        python -c "import numpy; print('NumPy版本:', numpy.__version__)"
-        python -c "import cv2; print('OpenCV版本:', cv2.__version__)"
+        # 验证安装 - 使用英文输出避免编码问题
+        Write-Output "=== Verifying packages in conda environment ==="
+        conda list numpy
+        conda list cython
+        conda list opencv
+        
+        # 使用简单的验证命令
+        python -c "import Cython; print('Cython OK')"
+        python -c "import numpy; print('NumPy OK')"
+        python -c "import cv2; print('OpenCV OK')"
 
     - name: 检查目录结构
       shell: pwsh
       run: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         conda activate pyaamed-env
-        echo "当前目录结构:"
+        Write-Output "Current directory structure:"
         Get-ChildItem -Recurse -Depth 2 | Select-Object Name
-        echo "Python目录内容:"
+        Write-Output "Python directory contents:"
         if (Test-Path "./python") {
             Get-ChildItem "./python"
         }
@@ -56,52 +65,56 @@ jobs:
     - name: 编译 pyAAMED 扩展模块
       shell: pwsh
       run: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $env:PYTHONIOENCODING = "utf-8"
+        
         # 确保使用 conda 环境
         conda activate pyaamed-env
         
         # 再次验证关键包
-        python -c "import Cython; print('Cython 可用')"
-        python -c "import numpy; print('NumPy 可用')"
-        python -c "import cv2; print('OpenCV 可用')"
+        python -c "import Cython; print('Cython available')"
+        python -c "import numpy; print('NumPy available')"
+        python -c "import cv2; print('OpenCV available')"
         
         # 编译
-        echo "开始编译..."
+        Write-Output "Starting compilation..."
         cd ./python
         python setup.py build_ext --inplace
         
-        echo "编译完成，检查生成的文件:"
+        Write-Output "Compilation completed, checking generated files:"
         Get-ChildItem -Filter "*.pyd"
         Get-ChildItem -Filter "*.dll"
 
     - name: 验证编译输出并收集产物
       shell: pwsh
       run: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         conda activate pyaamed-env
         
         # 创建产物目录
         New-Item -ItemType Directory -Path "artifacts" -Force
         
-        echo "=== 查找生成的 pyd 文件 ==="
+        Write-Output "=== Looking for generated pyd files ==="
         $pydFiles = Get-ChildItem -Path "." -Recurse -Filter "*.pyd"
         if ($pydFiles) {
             foreach ($file in $pydFiles) {
-                echo "找到 pyd 文件: $($file.FullName)"
+                Write-Output "Found pyd file: $($file.FullName)"
                 Copy-Item $file.FullName -Destination "artifacts/"
             }
         } else {
-            echo "未找到 pyd 文件"
+            Write-Output "No pyd files found"
             # 尝试在 build 目录中查找
-            echo "在 build 目录中查找:"
+            Write-Output "Looking in build directories:"
             Get-ChildItem -Path "." -Recurse -Filter "build" -Directory | ForEach-Object {
                 Get-ChildItem -Path $_.FullName -Recurse -Filter "*.pyd"
             }
         }
         
-        echo "=== 查找 pyAAMED 相关文件 ==="
+        Write-Output "=== Looking for pyAAMED related files ==="
         if (Test-Path "./python") {
             $pythonDirFiles = Get-ChildItem -Path "./python" -Filter "*AAMED*"
             foreach ($file in $pythonDirFiles) {
-                echo "找到文件: $($file.Name)"
+                Write-Output "Found file: $($file.Name)"
                 if ($file.Extension -eq ".pyd" -or $file.Extension -eq ".dll") {
                     Copy-Item $file.FullName -Destination "artifacts/"
                 }
@@ -109,40 +122,42 @@ jobs:
         }
         
         # 查找并复制 OpenCV DLL 依赖
-        echo "=== 查找 OpenCV DLL 依赖 ==="
+        Write-Output "=== Looking for OpenCV DLL dependencies ==="
         $condaEnvPath = conda info --base
         $opencvDllPath = "$condaEnvPath\envs\pyaamed-env\Library\bin"
         
         if (Test-Path $opencvDllPath) {
-            echo "在 $opencvDllPath 中查找 OpenCV DLL"
+            Write-Output "Looking for OpenCV DLLs in $opencvDllPath"
             $opencvDlls = Get-ChildItem -Path $opencvDllPath -Filter "opencv*.dll"
             foreach ($dll in $opencvDlls) {
-                echo "复制 OpenCV DLL: $($dll.Name)"
+                Write-Output "Copying OpenCV DLL: $($dll.Name)"
                 Copy-Item $dll.FullName -Destination "artifacts/"
             }
         }
         
         # 显示最终产物
-        echo "=== 最终产物列表 ==="
+        Write-Output "=== Final artifact list ==="
         Get-ChildItem -Path "artifacts" -Recurse
 
     - name: 测试编译的模块
       shell: pwsh
       run: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $env:PYTHONIOENCODING = "utf-8"
         conda activate pyaamed-env
         
-        echo "=== 测试导入编译的模块 ==="
+        Write-Output "=== Testing compiled module ==="
         if (Test-Path "./artifacts") {
             cd ./artifacts
             try {
-                python -c "import sys; sys.path.append('.'); import pyAAMED; print('成功导入 pyAAMED 模块')"
+                python -c "import sys; sys.path.append('.'); import pyAAMED; print('Successfully imported pyAAMED module')"
             } catch {
-                echo "导入模块失败: $($_.Exception.Message)"
-                echo "当前目录内容:"
+                Write-Output "Failed to import module: $($_.Exception.Message)"
+                Write-Output "Current directory contents:"
                 Get-ChildItem
             }
         } else {
-            echo "artifacts 目录不存在，跳过测试"
+            Write-Output "artifacts directory does not exist, skipping test"
         }
 
     - name: 打包产物
@@ -156,10 +171,10 @@ jobs:
             # 压缩产物
             Compress-Archive -Path "artifacts/*" -DestinationPath $zipName
             
-            echo "生成压缩包: $zipName"
+            Write-Output "Created archive: $zipName"
             Get-ChildItem -Filter "*.zip"
         } else {
-            echo "没有产物可打包"
+            Write-Output "No artifacts to package"
         }
 
     - name: 上传构建产物
@@ -175,12 +190,18 @@ jobs:
     - name: 显示构建信息
       shell: pwsh
       run: |
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         conda activate pyaamed-env
-        echo "=== 构建环境信息 ==="
+        Write-Output "=== Build environment information ==="
         python --version
-        echo "=== Conda 环境列表 ==="
+        Write-Output "=== Conda environment list ==="
         conda info --envs
-        echo "=== 当前环境路径 ==="
+        Write-Output "=== Current environment path ==="
         conda info --base
-        echo "=== 已安装的包 ==="
-        conda list | grep -E "(numpy|cython|opencv|setuptools|wheel|pip)"
+        Write-Output "=== Installed packages ==="
+        conda list numpy
+        conda list cython
+        conda list opencv
+        conda list setuptools
+        conda list wheel
+        conda list pip
