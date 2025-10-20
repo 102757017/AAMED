@@ -13,7 +13,7 @@ jobs:
 
     env:
       OPENCV_VERSION: "4.10.0"
-      OPENCV_PYTHON_VERSION: "4.10.0.84" # 👈 确保此行存在且正确
+      OPENCV_PYTHON_VERSION: "4.10.0.84"
       OPENCV_BUILD_VERSION: "4100"
 
     strategy:
@@ -33,18 +33,17 @@ jobs:
       uses: microsoft/setup-msbuild@v2
 
     - name: 安装依赖 (Cython, NumPy, 和 OpenCV-Python)
-      shell: pwsh # 使用 pwsh 确保 PowerShell 7 环境
+      shell: pwsh
       run: |
-        $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
+        $OutputEncoding = [System.Text.Encoding]::UTF8
         python -m pip install --upgrade pip
-        # 🎯 修正：添加 Cython 的安装
         pip install Cython numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
     - name: 下载并准备 OpenCV C++ 库 (健壮版)
-      shell: pwsh # 使用 pwsh 确保 PowerShell 7 环境
+      shell: pwsh
       run: |
-        $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
+        $OutputEncoding = [System.Text.Encoding]::UTF8
 
         $opencv_version = "${{ env.OPENCV_VERSION }}"
         $opencv_zip = "opencv-$opencv_version-windows.exe"
@@ -56,7 +55,7 @@ jobs:
         
         $file_size_mb = (Get-Item $opencv_zip).Length / 1MB
         Write-Host "下载完成，文件大小: $($file_size_mb.ToString('F2')) MB"
-        # 🎯 修正：文件大小检查阈值调整到 100 MB，以适应实际文件大小 174.43 MB
+        # 文件大小检查阈值，确认文件下载完整
         if ($file_size_mb -lt 100) { 
             Write-Error "错误：下载的 OpenCV 文件大小异常，可能不是完整安装包！"
             exit 1
@@ -71,37 +70,37 @@ jobs:
 
         Write-Host "OpenCV 已解压到: $opencv_install_dir/opencv"
 
-        # 🎯 修正：重新添加将 MSYS2 `usr/bin` 目录添加到 PATH 的逻辑，解决 pkg-config 找不到的问题
-        Write-Host "检查 pkg-config 是否可用..."
-        $msys2_bin_path = "C:\msys64\usr\bin" # GitHub Actions windows-2022 上的常见 MSYS2 bin 路径
+        Write-Host "检查并添加 pkg-config 到 PATH..."
+        $msys2_bin_path = "C:\msys64\usr\bin"
         if (Test-Path $msys2_bin_path) {
-            # 临时将 MSYS2 bin 路径添加到当前步骤及后续步骤的 PATH
-            Write-Host "::add-path::$msys2_bin_path"
-            Write-Host "已将 $msys2_bin_path 添加到本次运行的 PATH。"
+            # 🎯 修正：使用 GITHUB_PATH 环境变量文件来添加路径
+            Add-Content -Path $env:GITHUB_PATH -Value $msys2_bin_path
+            Write-Host "已将 $msys2_bin_path 添加到本次运行的 PATH (通过 GITHUB_PATH)。"
         } else {
             Write-Warning "MSYS2 安装路径 ($msys2_bin_path) 未找到。如果 setup.py 依赖 pkg-config，这可能导致失败。"
         }
 
-        # 设置 OPENCV_ROOT 环境变量，供 setup.py 使用
-        Write-Host "::set-env name=OPENCV_ROOT::$opencv_install_dir/opencv/build"
+        # 🎯 修正：使用 GITHUB_ENV 环境变量文件来设置 OPENCV_ROOT
+        Add-Content -Path $env:GITHUB_ENV -Value "OPENCV_ROOT=$($opencv_install_dir)/opencv/build"
+        Write-Host "已设置环境变量 OPENCV_ROOT=$($opencv_install_dir)/opencv/build (通过 GITHUB_ENV)。"
 
         Copy-Item -Path "python/setup.py" -Destination "python/setup_modified.py" -Force
         $setup_content = Get-Content "python/setup_modified.py"
-        # 由于我们通过环境变量传递 OPENCV_ROOT 了，这个替换可能就不再需要了，或者可以简化 setup.py
-        # 但为了兼容性，如果 setup.py 内部仍然有这个占位符，可以保留
+        # 这个替换操作可能不再严格需要，因为 OPENCV_ROOT 已经通过 env 文件设置。
+        # 但为了健壮性，如果 setup.py 内部仍然有这个占位符，保留它不失为一种兼容性做法。
         $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""', ('opencv_root = "' + $opencv_install_dir + '/opencv/build"')
         Set-Content -Path "python/setup_modified.py" -Value $new_setup_content
       working-directory: .
 
     - name: 编译 pyAAMED 扩展模块
-      shell: pwsh # 使用 pwsh 确保 PowerShell 7 环境
+      shell: pwsh
       run: |
-        $OutputEncoding = [System.Text.Encoding]::UTF8 # 确保 PowerShell 输出正确显示
+        $OutputEncoding = [System.Text.Encoding]::UTF8
         python setup_modified.py build_ext --inplace
       working-directory: ./python
       
     - name: 验证编译输出并收集产物
-      shell: pwsh # 使用 pwsh 确保 PowerShell 7 环境
+      shell: pwsh
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
         Write-Host "正在查找编译产物..."
@@ -115,12 +114,10 @@ jobs:
         $opencv_dll_path_base = "$opencv_install_dir/opencv/build/x64"
         $opencv_dll_source_path = ""
 
-        # 检查 vc16 目录下的 DLL
         if (Test-Path "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
             $opencv_dll_source_path = "$opencv_dll_path_base/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
             Write-Host "在 vc16 路径找到了 DLL：$opencv_dll_source_path"
         } 
-        # 否则检查 vc17 目录下的 DLL
         elseif (Test-Path "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll") {
             $opencv_dll_source_path = "$opencv_dll_path_base/vc17/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
             Write-Host "在 vc17 路径找到了 DLL：$opencv_dll_source_path"
