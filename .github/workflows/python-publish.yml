@@ -13,13 +13,14 @@ jobs:
 
     env:
       OPENCV_VERSION: "4.10.0"
-      OPENCV_PYTHON_VERSION: "4.10.0.84"
       OPENCV_BUILD_VERSION: "4100"
 
     strategy:
       matrix:
-        # 修正1：根据官方版本清单，为 windows-2022 选择明确存在的 Python 3.8.10 版本。
-        python-version: ["3.8.10", "3.11"]
+        # 核心修正2：不再指定具体的补丁版本 '3.8.10'。
+        # 只提供 '3.8'，让 setup-python 自动选择一个已缓存的、稳定的 3.8.x 版本。
+        # 这可以完全避免因动态下载和安装 Python 导致的操作被取消的错误。
+        python-version: ["3.8", "3.11"]
 
     steps:
     - name: 检出仓库代码
@@ -31,26 +32,39 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - name: 设置 MSVC C++ 编译环境
-      # 修正2：使用官方维护的 setup-msbuild action。
-      # 它会可靠地将 MSVC 编译/链接工具 (如 cl.exe) 添加到 PATH 中，解决了环境设置失败的问题。
       uses: microsoft/setup-msbuild@v2
 
-    - name: 安装依赖 (NumPy 和 OpenCV-Python)
+    - name: 安装依赖 (NumPy)
       shell: powershell
       run: |
         python -m pip install --upgrade pip
         pip install numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
-    - name: 下载并准备用于手动编译的 OpenCV C++ 库
+    - name: 下载并准备 OpenCV C++ 库 (健壮版)
+      # 核心修正1：修复下载问题并增加健壮性检查
       shell: powershell
       run: |
+        # 修复 PowerShell 控制台中文乱码问题
+        $OutputEncoding = [System.Text.Encoding]::UTF8
+
         $opencv_version = "${{ env.OPENCV_VERSION }}"
         $opencv_zip = "opencv-$opencv_version-windows.exe"
         $opencv_install_dir = "D:/opencv-manually-built"
+        # 使用更可靠的直接下载链接
+        $download_url = "https://github.com/opencv/opencv/releases/download/$opencv_version/$opencv_zip"
 
-        Write-Host "正在下载 OpenCV $opencv_version..."
-        Invoke-WebRequest -Uri "https://sourceforge.net/projects/opencvlibrary/files/$opencv_version/$opencv_zip/download" -OutFile $opencv_zip
+        Write-Host "正在从官方 GitHub Releases 下载 OpenCV $opencv_version..."
+        # 使用 curl -L 来正确处理重定向，并增加超时和重试
+        curl -L -o $opencv_zip $download_url --retry 3 --retry-delay 5
+        
+        # **增加关键验证步骤**：检查文件大小是否合理
+        $file_size_mb = (Get-Item $opencv_zip).Length / 1MB
+        Write-Host "下载完成，文件大小: $($file_size_mb.ToString('F2')) MB"
+        if ($file_size_mb -lt 500) {
+            Write-Error "错误：下载的 OpenCV 文件大小异常，可能不是完整安装包！"
+            exit 1
+        }
 
         New-Item -ItemType Directory -Path $opencv_install_dir -Force
         7z.exe x $opencv_zip "-o$opencv_install_dir"
@@ -59,7 +73,6 @@ jobs:
 
         Copy-Item -Path "python/setup.py" -Destination "python/setup_modified.py"
         $setup_content = Get-Content "python/setup_modified.py"
-        # 使用单引号和 -replace 操作符来简化字符串处理，避免复杂的转义
         $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""', ('opencv_root = "' + $opencv_install_dir + '/opencv/build"')
         Set-Content -Path "python/setup_modified.py" -Value $new_setup_content
       working-directory: .
@@ -73,6 +86,7 @@ jobs:
     - name: 验证编译输出并收集产物
       shell: powershell
       run: |
+        $OutputEncoding = [System.Text.Encoding]::UTF8
         Write-Host "正在查找编译产物..."
         $pyd_files = Get-ChildItem -Path . -Filter "pyAAMED*.pyd" -Recurse
         if ($null -eq $pyd_files) {
@@ -81,19 +95,20 @@ jobs:
         }
         Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
         
-        $dll_name = "opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
-        $dll_file = Get-ChildItem -Path . -Filter $dll_name -Recurse
-        if ($null -eq $dll_file) {
-            Write-Error "错误：未在工作目录下找到 $dll_name 文件。"
+        # 将 OpenCV 的 DLL 复制到 pyd 文件旁边，确保运行时能找到
+        $opencv_dll_path = "D:/opencv-manually-built/opencv/build/x64/vc16/bin/opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        if (-Not (Test-Path $opencv_dll_path)) {
+            Write-Error "错误: 在预期的解压路径中未找到 OpenCV DLL: $opencv_dll_path"
             exit 1
         }
-        Write-Host "已找到 DLL 文件: $($dll_file.FullName)"
-      working-directory: ./python
+        Copy-Item -Path $opencv_dll_path -Destination "python/"
+        Write-Host "已将 OpenCV DLL 复制到 python/ 目录"
+      working-directory: .
 
     - name: 上传编译产物 (pyAAMED.pyd 和 OpenCV DLL)
       uses: actions/upload-artifact@v4
       with:
-        name: pyAAMED-${{ matrix.python-version }}-windows-pyd
+        name: pyAAMED-py${{ matrix.python-version }}-windows
         path: |
           python/*.pyd
           python/opencv_world*.dll
