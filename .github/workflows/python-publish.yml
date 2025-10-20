@@ -69,7 +69,6 @@ jobs:
 
         Write-Host "OpenCV 已解压到: $opencv_install_dir/opencv"
 
-        # 确保 MSYS2 的 bin 目录在 PATH 中，以防万一 setup.py 仍然需要 pkg-config
         Write-Host "检查并添加 MSYS2 bin 目录到 PATH..."
         $msys2_bin_path = "C:\msys64\usr\bin"
         if (Test-Path $msys2_bin_path) {
@@ -79,50 +78,54 @@ jobs:
             Write-Warning "MSYS2 安装路径 ($msys2_bin_path) 未找到。如果 setup.py 依赖 pkg-config，这可能导致失败。"
         }
 
-        # 设置 OPENCV_ROOT 环境变量，供 setup.py 使用
         Add-Content -Path $env:GITHUB_ENV -Value "OPENCV_ROOT=$($opencv_install_dir)/opencv/build"
         Write-Host "已设置环境变量 OPENCV_ROOT=$($opencv_install_dir)/opencv/build (通过 GITHUB_ENV)。"
 
         # 🎯 核心修正：修改 setup.py 以禁用动态版本检测，直接使用环境变量提供的版本
         Copy-Item -Path "python/setup.py" -Destination "python/setup_modified.py" -Force
-        $setup_content = Get-Content "python/setup_modified.py"
+        $setup_file_content_lines = Get-Content "python/setup_modified.py" # 直接读取为行数组
 
-        # 确保 'os' 模块被导入，以便使用 os.environ.get
-        if ($setup_content -notmatch '^\s*import os\s*$') {
-            $setup_content = "import os`n" + $setup_content
-            Write-Host "已在 setup_modified.py 顶部添加 'import os'。"
-        }
-
-        # 替换原始的 opencv_root 占位符
-        $setup_content = $setup_content -replace 'opencv_root\s*=\s*""', ('opencv_root = "' + $opencv_install_dir + '/opencv/build"')
-
-        # 🎯 关键修改：寻找并替换掉通过 subprocess.check_output 动态设置 opencv_src_version 的代码行
-        # 我们假设这行代码看起来像 'opencv_src_version = subprocess.check_output(...)'
-        # 替换它为直接从环境变量获取版本，或者使用我们流水线中定义的 OPENCV_VERSION
-        $pattern = '^(\s*opencv_src_version\s*=\s*subprocess\.check_output)(.*)$'
-        $replacement = "`$1.original_call(...) # Original call commented out or replaced.`n`$1 = os.environ.get('OPENCV_VERSION', '$($env:OPENCV_VERSION)')"
-        # 由于我们无法直接在 PowerShell 中执行复杂的 Python 替换逻辑，并且避免多次替换导致问题
-        # 我们采用更直接的替换方式：找到这行，然后用新的赋值语句替换。
-        # 这里使用一个更通用的方式，直接替换赋值语句。
-        $new_setup_content = @()
-        $replaced_version_line = $false
-        foreach ($line in $setup_content) {
-            # 匹配任何尝试通过 subprocess.check_output 给 opencv_src_version 赋值的行
-            if ($line -match 'opencv_src_version\s*=\s*subprocess\.check_output') {
-                $new_setup_content += "opencv_src_version = os.environ.get('OPENCV_VERSION', '$($env:OPENCV_VERSION)')`n"
-                Write-Host "已替换 setup_modified.py 中动态获取 opencv_src_version 的代码行。"
-                $replaced_version_line = $true
+        $temp_modified_lines = @()
+        $os_import_present = $false
+        
+        # 第一遍遍历：检查 'import os' 和替换 'opencv_root'
+        foreach ($line in $setup_file_content_lines) {
+            if ($line -match '^\s*import os\s*$') {
+                $os_import_present = $true
+            }
+            if ($line -match 'opencv_root\s*=\s*""') {
+                $temp_modified_lines += ('opencv_root = "' + $opencv_install_dir + '/opencv/build"')
             } else {
-                $new_setup_content += $line`n
+                $temp_modified_lines += $line
             }
         }
-        # 如果没有找到匹配行，但仍然报错，可能需要用户手动确认行 30 的具体内容。
-        if (-not $replaced_version_line) {
-            Write-Warning "未自动替换 setup_modified.py 中动态获取 opencv_src_version 的代码行。请手动检查文件内容，特别是行 30。"
+        
+        # 如果文件顶部没有 'import os'，则添加
+        if (-not $os_import_present) {
+            $temp_modified_lines = @("import os") + $temp_modified_lines
+            Write-Host "已在 setup_modified.py 顶部添加 'import os'。"
+        }
+        
+        # 第二遍遍历：替换动态获取 opencv_src_version 的代码行
+        $final_setup_content_lines = @()
+        $version_line_replaced = $false
+        foreach ($line in $temp_modified_lines) {
+            if ($line -match 'opencv_src_version\s*=\s*subprocess\.check_output') {
+                $final_setup_content_lines += "opencv_src_version = os.environ.get('OPENCV_VERSION', '$($env:OPENCV_VERSION)')"
+                Write-Host "已替换 setup_modified.py 中动态获取 opencv_src_version 的代码行。"
+                $version_line_replaced = $true
+            } else {
+                $final_setup_content_lines += $line
+            }
+        }
+
+        if (-not $version_line_replaced) {
+            Write-Warning "未自动替换 setup_modified.py 中动态获取 opencv_src_version 的代码行。请手动检查文件内容，特别是预计的行 30。"
             Write-Warning "如果行 30 确实是 subprocess.check_output 调用，您可能需要手动调整正则表达式或直接编辑 setup.py。"
         }
         
-        Set-Content -Path "python/setup_modified.py" -Value ($new_setup_content | Out-String) # Out-String 确保是单个字符串
+        # 将修改后的行数组用换行符连接起来，并写入文件
+        Set-Content -Path "python/setup_modified.py" -Value ($final_setup_content_lines -join "`n")
 
       working-directory: .
 
