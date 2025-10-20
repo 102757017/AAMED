@@ -11,11 +11,15 @@ jobs:
   build_windows:
     runs-on: windows-latest
 
+    # 使用环境变量来统一管理 OpenCV 版本，方便未来升级
+    env:
+      OPENCV_VERSION: "4.10.0"             # C++ 库的版本
+      OPENCV_PYTHON_VERSION: "4.10.0.84"   # 对应的 Python 包版本 (pip install)
+      OPENCV_BUILD_VERSION: "4100"         # 用于 DLL 文件名 (opencv_world4100.dll)
+
     strategy:
       matrix:
-        # 尝试指定一个更具体的 Python 3.8 版本，例如 3.8.18 或 3.8.19
-        # 如果 3.8.10 持续失败，这可能有所帮助。
-        python-version: ["3.8", "3.11"] # 保持 3.8，如果仍失败再尝试 3.8.18/3.8.19
+        python-version: ["3.8", "3.11"]
 
     steps:
     - name: 检出仓库代码
@@ -25,68 +29,53 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
+        # 不指定具体补丁版本，让 action 自动选择最新的稳定版，增加安装成功率
 
     - name: 安装依赖 (NumPy 和 OpenCV-Python)
+      shell: powershell
       run: |
         python -m pip install --upgrade pip
-        # 统一使用支持 Python 3.8 和 3.11 的 `opencv-python` 版本。
-        # 根据你的日志，4.8.0.74 支持 Python 3.11 并且一般也兼容 Python 3.8。
-        # 这个版本号的 `opencv-python` 意味着我们接下来需要下载 OpenCV C++ 4.8.0。
-        pip install numpy "opencv-python==4.8.0.74" # <-- 重要修正点：更新 OpenCV Python 包版本
+        # 安装与 C++ 库版本匹配的 opencv-python
+        pip install numpy "opencv-python==${{ env.OPENCV_PYTHON_VERSION }}"
       working-directory: ./python
 
     - name: 检查 C++ 编译工具 (编译所需)
       shell: powershell
       run: |
         if (-Not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
-            Write-Error "未找到 Microsoft Visual C++ 编译工具。请确保运行器镜像上已启用 '使用 C++ 的桌面开发' 工作负载。"
+            Write-Error "未找到 Microsoft Visual C++ 编译工具。"
             exit 1
         }
 
-    - name: 下载并准备用于手动编译的 OpenCV C++ 库 (匹配 Python 包版本)
+    - name: 下载并准备用于手动编译的 OpenCV C++ 库
       shell: powershell
       run: |
-        # 现在我们下载 OpenCV C++ 4.8.0，以匹配上面安装的 opencv-python==4.8.0.74
-        $opencv_version = "4.8.0" # <-- 重要修正点：更新 OpenCV C++ 库版本
-        $opencv_build_version = "480" # 用于 DLL 文件名 (例如 opencv_world480.dll)
-        # 注意：4.8.0 pre-built binaries 对应的文件可能不再是 vc14_vc15.exe 了，
-        # 需要查找官方发布页面或者使用源码编译
-        # 但是，GitHub Actions 上的 windows-latest 运行器可能已经预装了 Visual Studio 2019/2022 (vc16/vc17)。
-        # 预编译包可能没有直接以 vc1X 命名的。
-        # 对于 4.8.0，通常会有一个 zip 压缩包，或者你需要从源码编译。
-        # 我们假设存在一个 pre-built zip 文件。请根据实际情况查找合适的下载链接。
-        # 例如，从 OpenCV 的 Release 页面找到 Win Pack。
-        # 以下链接是一个示例，可能需要手动更新到最新的官方下载地址：
+        # 从环境变量获取版本信息
+        $opencv_version = "${{ env.OPENCV_VERSION }}"
+        $opencv_zip = "opencv-$opencv_version-windows.exe" # 注意：新版 OpenCV 的文件名格式可能不同
+        $opencv_install_dir = "D:/opencv-manually-built"
+
         Write-Host "正在下载 OpenCV $opencv_version..."
-        # 寻找 OpenCV 4.8.0 Windows 预编译包的下载链接
-        # 通常在 GitHub 或 sourceforge 上会有 zip 格式的发布
-        # 示例：https://github.com/opencv/opencv/releases/download/4.8.0/opencv-4.8.0-windows.exe (这是一个自解压EXE)
-        $opencv_download_url = "https://github.com/opencv/opencv/releases/download/4.8.0/opencv-4.8.0-windows.exe"
-        $opencv_zip = "opencv-$opencv_version-windows.exe" # 匹配文件名的自解压包
+        # 更新下载链接以匹配新版本
+        Invoke-WebRequest -Uri "https://sourceforge.net/projects/opencvlibrary/files/$opencv_version/$opencv_zip/download" -OutFile $opencv_zip
 
-        Invoke-WebRequest -Uri $opencv_download_url -OutFile $opencv_zip
-
-        $opencv_install_dir = "D:/opencv-manually-built" # 临时安装 OpenCV 的目录
         New-Item -ItemType Directory -Path $opencv_install_dir -Force
-        # 7z.exe 用于解压 exe
         7z.exe x $opencv_zip "-o$opencv_install_dir"
 
-        # 自解压包通常会创建 `opencv` 子文件夹，所以最终路径是 `D:/opencv-manually-built/opencv`
         Write-Host "OpenCV 已解压到: $opencv_install_dir/opencv"
 
-        # 更新 setup.py 中的 opencv_root 变量
+        # 修改 setup.py，指向下载的 OpenCV 库
         Copy-Item -Path "python/setup.py" -Destination "python/setup_modified.py"
         $setup_content = Get-Content "python/setup_modified.py"
-        $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""','opencv_root = "' + $opencv_install_dir + '/opencv"'
-        # 还需要确保 `opencv_world` 的文件名也匹配了 `4.8.0`，即 `opencv_world480.dll`
-        # 检查 setup.py 中这一行：`libraries = [f"opencv_world{version}"]`
-        # 这里的 `version` 是从 `cv2.__version__` 来的，所以它会是 `480`，应该自动匹配。
+        # 使用正则表达式替换 opencv_root 的值
+        $new_setup_content = $setup_content -replace 'opencv_root\s*=\s*""','opencv_root = "' + $opencv_install_dir + '/opencv/build"'
         Set-Content -Path "python/setup_modified.py" -Value $new_setup_content
       working-directory: .
 
     - name: 编译 pyAAMED 扩展模块
       shell: powershell
       run: |
+        # cv2.__version__ 将会是 4.10.0.84， setup.py 会自动找到 '4100' 作为版本号
         python setup_modified.py build_ext --inplace
       working-directory: ./python
 
@@ -94,14 +83,16 @@ jobs:
       shell: powershell
       run: |
         Get-ChildItem -Path . -Filter "pyAAMED*.pyd" -Recurse
-        # 注意：现在预期的 DLL 文件名是 opencv_world480.dll
-        Get-ChildItem -Path . -Filter "opencv_world*.dll" -Recurse
-        if (-Not (Test-Path "$PWD/opencv_world480.dll")) { # <-- 重要修正点：更新 DLL 文件名
-            Write-Error "编译完成后未找到 opencv_world480.dll 文件。可能出现问题。"
+        Get-ChildItem -Path . -Filter "*.dll" -Recurse
+        
+        # 检查新版本对应的 opencv_world DLL 是否存在
+        $dll_name = "opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
+        if (-Not (Test-Path "$PWD/$dll_name")) {
+            Write-Error "编译完成后未找到 $dll_name 文件。可能出现问题。"
             exit 1
         }
+        Write-Host "成功找到 $dll_name"
       working-directory: ./python
-
 
     - name: 上传编译产物 (pyAAMED.pyd 和 OpenCV DLL)
       uses: actions/upload-artifact@v4
@@ -111,5 +102,6 @@ jobs:
           python/*.pyd
           python/opencv_world*.dll
         retention-days: 7
+
 
 
