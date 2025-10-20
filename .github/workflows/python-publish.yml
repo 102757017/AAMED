@@ -114,7 +114,6 @@ jobs:
       
     - name: 验证编译输出并收集产物
       shell: pwsh
-      # 此步骤只有在编译成功（即 LNK1181 解决）后才会运行
       run: |
         $OutputEncoding = [System.Text.Encoding]::UTF8
         Write-Host "正在查找编译产物..."
@@ -125,14 +124,14 @@ jobs:
         }
         Write-Host "已找到 PYD 文件: $($pyd_files.FullName)"
         
-        $full_opencv_path = "$env:OPENCV_ROOT" # This is D:/opencv-manually-built/opencv
-        $opencv_build_x64_path = "$full_opencv_path/build/x64"
-        Write-Host "OpenCV Build x64 路径: $opencv_build_x64_path"
+        # ✨ 关键修正：使用 env:OPENCV_ROOT 来正确构建 DLL 路径
+        $opencv_build_x64_path = "$env:OPENCV_ROOT/build/x64"
+        Write-Host "OpenCV Build x64 路径 (根据 OPENCV_ROOT): $opencv_build_x64_path"
 
         $dll_name = "opencv_world${{ env.OPENCV_BUILD_VERSION }}.dll"
         Write-Host "需要寻找的 DLL 名称: $dll_name"
 
-        # 再次尝试 vc16 和 vc17 路径。一旦我们从调试信息中确定了正确的 VC 版本，这里会相应调整
+        # 尝试 vc16 和 vc17 路径
         $vc16_bin_dir = "$opencv_build_x64_path/vc16/bin"
         $vc17_bin_dir = "$opencv_build_x64_path/vc17/bin"
 
